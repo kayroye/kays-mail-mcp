@@ -21,7 +21,7 @@ dev = [
     "mypy==1.18.2",
     "pytest==9.0.3",
     "ruff==0.12.11",
-    "pyjwt[crypto]==2.13.0",
+    "pyjwt[crypto]==2.15.1",
     "httpx==0.28.1",
 ]
 

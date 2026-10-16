@@ -93,7 +93,11 @@ def test_mime_part_bomb_is_rejected_before_building_unbounded_objects() -> None:
         attachment_content(raw, attachment_index=0, max_attachment_bytes=1024)
 
 
-@pytest.mark.parametrize("raw", [b"X: y\n" * 250001, b"Subject: " + b"x" * 1048577 + b"\n\nbody"])
+@pytest.mark.parametrize(
+    "raw",
+    [b"X: y\n" * 250001, b"Subject: " + b"x" * 1048577 + b"\n\nbody"],
+    ids=["many-lines", "long-line"],
+)
 def test_pathological_physical_lines_are_rejected_before_parser_allocation(raw: bytes) -> None:
     with pytest.raises(MimeParseError, match="line limit"):
         parse_message(raw, max_body_bytes=1024)
