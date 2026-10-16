@@ -1,4 +1,6 @@
-"""Serve the authenticated MCP endpoint; incomplete auth configuration fails closed."""
+"""start the authenticated MCP endpoint from validated environment settings
+stop before serving when IMAP or OIDC configuration is incomplete
+"""
 
 from .auth import create_auth, load_auth_settings
 from .config import SettingsError, load_settings
@@ -6,6 +8,8 @@ from .server import create_server
 
 
 def main() -> None:
+    """load configuration, build the authenticated server, and start HTTP transport"""
+    # load both settings sets before starting so auth errors cannot expose a partial service
     try:
         settings = load_settings()
         auth = create_auth(load_auth_settings())

@@ -1,27 +1,29 @@
-"""Safe domain errors that never include mailbox content or credentials."""
+"""define safe domain errors shared by transport and MCP tools
+keep failure categories useful without exposing mailbox content or credentials
+"""
 
 from __future__ import annotations
 
 
 class ImapMcpError(RuntimeError):
-    """Base error for predictable, safe IMAP server failures."""
+    """provide the common base for safe IMAP service failures"""
 
 
 class ImapConnectionError(ImapMcpError):
-    """The server could not establish a verified TLS connection."""
+    """report an unavailable or unverified IMAP connection"""
 
 
 class ImapAuthenticationError(ImapMcpError):
-    """The IMAP server rejected authentication."""
+    """report rejected IMAP credentials"""
 
 
 class MailboxNotAllowedError(ImapMcpError):
-    """The requested mailbox is not in the configured allowlist."""
+    """report a mailbox outside the configured allowlist"""
 
 
 class MailboxNotFoundError(ImapMcpError):
-    """The allowed mailbox could not be selected."""
+    """report an allowlisted mailbox that the server could not select"""
 
 
 class MessageNotFoundError(ImapMcpError):
-    """No message exists for the requested UID in the selected mailbox."""
+    """report a missing message UID in the selected mailbox"""
