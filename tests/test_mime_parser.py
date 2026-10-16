@@ -1,3 +1,7 @@
+"""verify MIME normalization, size checks, and part-count bounds
+exercise the safe outputs consumed by message and attachment tools
+"""
+
 from __future__ import annotations
 
 from email.message import EmailMessage
@@ -8,6 +12,7 @@ from imap_mcp.mime_parser import MimeParseError, attachment_content, parse_messa
 
 
 def multipart_message() -> bytes:
+    """build a multipart fixture with encoded headers, plain text, HTML, and a PDF"""
     message = EmailMessage()
     message["Subject"] = "=?utf-8?b?UG9zdGEg4pyT?="
     message["From"] = "Sender <sender@example.test>"
@@ -26,6 +31,7 @@ def multipart_message() -> bytes:
 
 
 def test_parse_message_prefers_plain_text_and_decodes_headers() -> None:
+    """check normalized headers, plain text preference, and attachment inventory"""
     parsed = parse_message(multipart_message(), max_body_bytes=1024)
 
     assert parsed.subject == "Posta ✓"
@@ -37,6 +43,7 @@ def test_parse_message_prefers_plain_text_and_decodes_headers() -> None:
 
 
 def test_html_body_is_converted_to_plain_text_without_attributes_or_scripts() -> None:
+    """check HTML output retains visible text and drops markup attributes and scripts"""
     message = EmailMessage()
     message.set_content(
         '<p>Visible <a href="https://tracker.example.test/id">text</a></p><script>bad()</script>',
@@ -51,6 +58,7 @@ def test_html_body_is_converted_to_plain_text_without_attributes_or_scripts() ->
 
 
 def test_parse_message_rejects_oversized_body() -> None:
+    """check the configured body cap is applied before returning decoded text"""
     message = EmailMessage()
     message.set_content("x" * 20)
 
@@ -59,6 +67,7 @@ def test_parse_message_rejects_oversized_body() -> None:
 
 
 def test_attachment_content_returns_only_allowed_attachment() -> None:
+    """check an explicitly indexed allowed attachment returns its bytes and metadata"""
     attachment, content = attachment_content(
         multipart_message(), attachment_index=0, max_attachment_bytes=1024
     )
@@ -68,6 +77,7 @@ def test_attachment_content_returns_only_allowed_attachment() -> None:
 
 
 def test_attachment_content_rejects_unknown_type_and_oversize() -> None:
+    """check attachment type policy and configured byte cap reject unsafe payloads"""
     message = EmailMessage()
     message.set_content("body")
     message.add_attachment(
@@ -82,6 +92,7 @@ def test_attachment_content_rejects_unknown_type_and_oversize() -> None:
 
 
 def test_mime_part_bomb_is_rejected_before_building_unbounded_objects() -> None:
+    """check both message and attachment paths share the MIME part-count boundary"""
     raw = (
         b"Content-Type: multipart/mixed; boundary=x\r\n\r\n"
         + (b"--x\r\nContent-Type: text/plain\r\n\r\ny\r\n" * 300)
@@ -99,5 +110,6 @@ def test_mime_part_bomb_is_rejected_before_building_unbounded_objects() -> None:
     ids=["many-lines", "long-line"],
 )
 def test_pathological_physical_lines_are_rejected_before_parser_allocation(raw: bytes) -> None:
+    """check many short lines and one oversized line are rejected at parse entry"""
     with pytest.raises(MimeParseError, match="line limit"):
         parse_message(raw, max_body_bytes=1024)

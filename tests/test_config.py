@@ -1,3 +1,7 @@
+"""verify environment configuration defaults, secret loading, and validation
+keep fixtures small while checking the settings shared with auth and IMAP modules
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -8,6 +12,7 @@ from imap_mcp.config import SettingsError, TlsMode, load_settings
 
 
 def environment(**overrides: str) -> dict[str, str]:
+    """return valid required settings with caller-selected overrides"""
     values = {
         "IMAP_HOST": "imap.example.com",
         "IMAP_USERNAME": "mailbox@example.com",
@@ -19,6 +24,7 @@ def environment(**overrides: str) -> dict[str, str]:
 
 
 def test_load_settings_uses_safe_defaults() -> None:
+    """check default TLS mode, mailbox parsing, limits, and HTTP port"""
     settings = load_settings(environment())
 
     assert settings.host == "imap.example.com"
@@ -29,6 +35,7 @@ def test_load_settings_uses_safe_defaults() -> None:
 
 
 def test_load_settings_accepts_password_file(tmp_path: Path) -> None:
+    """check password-file loading and explicit STARTTLS selection"""
     password_file = tmp_path / "password"
     password_file.write_text("file-secret\n", encoding="utf-8")
 
@@ -55,11 +62,13 @@ def test_load_settings_accepts_password_file(tmp_path: Path) -> None:
 def test_load_settings_rejects_unsafe_configuration(
     overrides: dict[str, str], message: str
 ) -> None:
+    """check missing credentials, invalid TLS, and out-of-range limits are rejected"""
     with pytest.raises(SettingsError, match=message):
         load_settings(environment(**overrides))
 
 
 def test_password_is_not_disclosed_by_errors() -> None:
+    """check configuration failures do not reveal a supplied password"""
     with pytest.raises(SettingsError) as error:
         load_settings(environment(IMAP_PASSWORD="a-secret-value", IMAP_PORT="invalid"))
 

@@ -1,3 +1,7 @@
+"""verify explicit attachment retrieval returns JSON-safe base64 content
+use a fake IMAP client to isolate tool formatting from transport behavior
+"""
+
 from __future__ import annotations
 
 import base64
@@ -8,16 +12,22 @@ from imap_mcp.tools.attachments import make_get_attachment
 
 
 class FakeAttachmentClient:
+    """provide one fixture message containing an allowed PDF attachment"""
+
     def __init__(self, settings: Settings) -> None:
+        """retain the settings passed through the tool factory"""
         self.settings = settings
 
     def __enter__(self) -> FakeAttachmentClient:
+        """provide the fake as a context-managed session"""
         return self
 
     def __exit__(self, *_: object) -> None:
+        """finish the fake session without external cleanup"""
         return None
 
     def fetch_rfc822(self, mailbox: str, uid: int, uidvalidity: int) -> bytes:
+        """check the requested mailbox identity and build the fixture message"""
         assert (mailbox, uid) == ("INBOX", 7)
         message = EmailMessage()
         message.set_content("body")
@@ -28,6 +38,7 @@ class FakeAttachmentClient:
 
 
 def settings() -> Settings:
+    """build minimal valid settings for attachment retrieval"""
     return load_settings(
         {
             "IMAP_HOST": "imap.example.test",
@@ -39,6 +50,7 @@ def settings() -> Settings:
 
 
 def test_get_attachment_returns_json_safe_base64_content() -> None:
+    """check indexed attachment bytes are returned as base64 with their metadata"""
     tool = make_get_attachment(settings(), client_factory=FakeAttachmentClient)
 
     result = tool("INBOX", 7, 0, 101)
