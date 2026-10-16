@@ -1,4 +1,6 @@
-"""Read-only mailbox inventory MCP tool."""
+"""expose configured mailbox names through a read-only MCP tool
+use ImapClient to filter the server inventory by the allowlist in Settings
+"""
 
 from __future__ import annotations
 
@@ -10,25 +12,31 @@ from ..imap_client import ImapClient
 
 
 class Mailbox(TypedDict):
-    """Stable IMAP mailbox identifier exposed to subsequent read-only tools."""
+    """hold the mailbox identifier shared with later read-only tool calls"""
 
     id: str
 
 
 class ListMailboxesResult(TypedDict):
-    """Bounded mailbox inventory containing no message metadata."""
+    """describe the mailbox-only inventory response"""
 
     mailboxes: list[Mailbox]
 
 
 class MailboxSession(Protocol):
-    """Read-only IMAP session behavior required by this tool."""
+    """describe the session calls needed by this tool"""
 
-    def __enter__(self) -> MailboxSession: ...
+    def __enter__(self) -> MailboxSession:
+        """open a session for the duration of one tool call"""
+        ...
 
-    def __exit__(self, *_: object) -> None: ...
+    def __exit__(self, *_: object) -> None:
+        """close the session after listing mailboxes"""
+        ...
 
-    def list_mailboxes(self) -> tuple[str, ...]: ...
+    def list_mailboxes(self) -> tuple[str, ...]:
+        """return existing mailbox names that pass the server allowlist"""
+        ...
 
 
 ImapClientFactory = Callable[[Settings], MailboxSession]
@@ -37,10 +45,10 @@ ImapClientFactory = Callable[[Settings], MailboxSession]
 def make_list_mailboxes(
     settings: Settings, client_factory: ImapClientFactory = ImapClient
 ) -> Callable[[], ListMailboxesResult]:
-    """Create a zero-input MCP tool bound to validated server configuration."""
+    """create a zero-input tool bound to server configuration and client factory"""
 
     def list_mailboxes() -> ListMailboxesResult:
-        """List configured mailboxes that currently exist on the IMAP server."""
+        """return configured mailboxes that currently exist on the IMAP server"""
         with client_factory(settings) as client:
             return {"mailboxes": [{"id": mailbox} for mailbox in client.list_mailboxes()]}
 
