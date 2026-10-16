@@ -54,6 +54,12 @@ The connector dials out; router forwarding is unnecessary. FastMCP and Keycloak
 handle OAuth. Do not add a separate Cloudflare Access browser-login wall in front
 of MCP unless you deliberately integrate the two authentication layers.
 
+If Cloudflare returns error 1010 to an MCP client, use a configuration rule to
+disable Browser Integrity Check only for your two mail-service hostnames. This
+browser header filter can reject API clients; see Cloudflare’s
+[Browser Integrity Check guidance](https://developers.cloudflare.com/waf/tools/browser-integrity-check/).
+Keep the server’s OAuth authentication enabled.
+
 The generated `tunnel.yml` is a route reference, not an uploaded remote tunnel
 configuration. Other operators do not need the `cf` CLI or a Cloudflare API token.
 If you use another reverse proxy, attach it to the installation's private ingress
