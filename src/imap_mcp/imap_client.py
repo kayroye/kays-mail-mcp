@@ -9,7 +9,7 @@ import imaplib
 import re
 import shlex
 import ssl
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import date
 from functools import lru_cache
@@ -31,6 +31,7 @@ class ImapConnection(Protocol):
 
     literal: Any
     maximum: int
+    remaining: int | None
 
     def response(self, code: str) -> tuple[str, Any]:
         """read one server response value such as UIDVALIDITY"""
@@ -223,38 +224,53 @@ class ImapClient:
                         raise ImapConnectionError("mail provider did not accept UTF-8 search")
                     matching = set(_uids_from_search(extra))
                     uids = tuple(uid for uid in uids if uid in matching)
-        headers = []
-        total_bytes = 0
-        # fetch newest UIDs first while enforcing an aggregate cap across all headers
-        for uid in reversed(uids[-maximum:]):
-            header = self._fetch_header(uid)
-            total_bytes += len(header.raw_headers)
-            if total_bytes > 4_194_304:
-                raise ValueError("search headers exceed aggregate size limit; reduce result count")
-            headers.append(header)
-        return tuple(headers)
+        return self._fetch_headers(tuple(reversed(uids[-maximum:])))
 
-    def _fetch_header(self, uid: int) -> MessageHeader:
-        """fetch the fixed header allowlist and attach current mailbox version metadata"""
+    def _fetch_headers(self, uids: tuple[int, ...]) -> tuple[MessageHeader, ...]:
+        """fetch one bounded UID batch and restore order using returned UID metadata"""
+        if not uids:
+            return ()
         connection = self._require_connection()
         connection.maximum = 65_537
+        connection.remaining = 4_194_304
         try:
             status, responses = connection.uid(
                 "FETCH",
-                str(uid),
-                "(BODY.PEEK[HEADER.FIELDS (FROM TO CC SUBJECT DATE MESSAGE-ID)]<0.65537> FLAGS)",
+                ",".join(str(uid) for uid in uids),
+                "(UID FLAGS BODY.PEEK[HEADER.FIELDS "
+                "(FROM TO CC SUBJECT DATE MESSAGE-ID)]<0.65537>)",
             )
         except (OSError, imaplib.IMAP4.error):
             raise ImapConnectionError("unable to retrieve IMAP message headers") from None
+        finally:
+            connection.remaining = None
         if status != "OK":
             raise MessageNotFoundError("message UID was not found")
-        for response in responses:
-            if isinstance(response, tuple) and len(response) > 1 and isinstance(response[1], bytes):
-                if len(response[1]) > 65_536:
-                    raise ValueError("message header exceeds size limit")
-                flags = response[0] if isinstance(response[0], bytes) else b""
-                return MessageHeader(uid, response[1], b"\\Seen" not in flags, self._uidvalidity)
-        raise MessageNotFoundError("message UID was not found")
+        headers: dict[int, MessageHeader] = {}
+        requested = set(uids)
+        total_bytes = 0
+        for metadata, raw in _header_records(responses):
+            if len(raw) > 65_536:
+                raise ValueError("message header exceeds size limit")
+            total_bytes += len(raw)
+            if total_bytes > 4_194_304:
+                raise ValueError("search headers exceed aggregate size limit; reduce result count")
+            identity = re.search(rb"\bUID ([1-9][0-9]*)\b", metadata, re.IGNORECASE)
+            flags = re.search(rb"\bFLAGS \(([^)]*)\)", metadata, re.IGNORECASE)
+            if identity is None or flags is None:
+                raise ImapConnectionError("invalid IMAP header metadata")
+            uid = int(identity[1])
+            if uid not in requested:
+                continue
+            if uid in headers:
+                raise ImapConnectionError("duplicate IMAP header UID")
+            headers[uid] = MessageHeader(
+                uid, raw, b"\\seen" not in flags[1].lower().split(), self._uidvalidity
+            )
+        if requested != headers.keys():
+            # do not silently report the end of pagination when an expunge races the fetch
+            raise MessageNotFoundError("message UID was not found; search again")
+        return tuple(headers[uid] for uid in uids)
 
     def _select_readonly(self, mailbox: str) -> None:
         """enforce the configured allowlist and refresh UIDVALIDITY on read-only selection"""
@@ -401,18 +417,50 @@ def _operation_gate(maximum: int) -> BoundedSemaphore:
     return BoundedSemaphore(maximum)
 
 
+def _header_records(responses: list[object]) -> Iterator[tuple[bytes, bytes]]:
+    """join each header literal with metadata before and after it in imaplib responses"""
+    metadata = b""
+    raw: bytes | None = None
+    for response in responses:
+        if isinstance(response, tuple):
+            if raw is not None:
+                yield metadata, raw
+            if (
+                len(response) != 2
+                or not isinstance(response[0], bytes)
+                or not isinstance(response[1], bytes)
+            ):
+                raise ImapConnectionError("invalid IMAP header response")
+            metadata, raw = response
+        elif isinstance(response, bytes):
+            if re.match(rb"[0-9]+ \(", response):
+                # an unsolicited flags-only FETCH is a separate message, not a suffix
+                if raw is not None:
+                    yield metadata, raw
+                metadata, raw = b"", None
+            elif raw is not None:
+                metadata += b" " + response
+    if raw is not None:
+        yield metadata, raw
+
+
 class LimitedIMAP4SSL(imaplib.IMAP4_SSL):
     """reject oversized server literals before imaplib allocates their payload"""
 
     def __init__(self, *args: Any, maximum: int, **kwargs: Any) -> None:
         """store the literal bound before initializing the standard TLS client"""
         self.maximum = maximum
+        self.remaining: int | None = None
         super().__init__(*args, **kwargs)
 
     def read(self, size: int) -> bytes:
         """enforce the configured literal bound before delegating the read"""
         if size > self.maximum:
             raise OSError("IMAP literal exceeds configured limit")
+        if self.remaining is not None:
+            if size > self.remaining:
+                raise OSError("IMAP literals exceed aggregate size limit")
+            self.remaining -= size
         return super().read(size)
 
 
@@ -422,10 +470,15 @@ class LimitedIMAP4(imaplib.IMAP4):
     def __init__(self, *args: Any, maximum: int, **kwargs: Any) -> None:
         """store the literal bound before initializing the standard IMAP client"""
         self.maximum = maximum
+        self.remaining: int | None = None
         super().__init__(*args, **kwargs)
 
     def read(self, size: int) -> bytes:
         """enforce the configured literal bound before delegating the read"""
         if size > self.maximum:
             raise OSError("IMAP literal exceeds configured limit")
+        if self.remaining is not None:
+            if size > self.remaining:
+                raise OSError("IMAP literals exceed aggregate size limit")
+            self.remaining -= size
         return super().read(size)

@@ -24,10 +24,11 @@ class FakeConnection:
     )
     fetched_message: bytes | None = b"Subject: fixture\r\n\r\nbody"
     selected: list[tuple[str, bool]] = field(default_factory=list)
-    uid_calls: list[tuple[str, tuple[str, ...]]] = field(default_factory=list)
+    uid_calls: list[tuple[str, tuple[Any, ...]]] = field(default_factory=list)
     logged_out: bool = False
     literal: bytes | None = None
     maximum: int = 26_214_401
+    remaining: int | None = None
 
     def response(self, code: str) -> tuple[str, list[bytes]]:
         """return a valid UIDVALIDITY response for mailbox selection"""

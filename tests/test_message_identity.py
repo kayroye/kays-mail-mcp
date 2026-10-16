@@ -32,7 +32,7 @@ class WireFixture(FakeConnection):
             return "OK", [b"42"]
         if args[-1] == "(RFC822.SIZE)":
             return "OK", [f"1 (UID 42 RFC822.SIZE {self.declared_size})".encode()]
-        return "OK", [(b"1 (UID 42 BODY[] {3}", b"abc"), b")"]
+        return "OK", [(b"1 (UID 42 FLAGS () BODY[] {3}", b"abc"), b")"]
 
 
 def test_stale_uidvalidity_rejected_before_message_fetch() -> None:
@@ -154,7 +154,7 @@ def test_search_headers_have_a_separate_partial_fetch_and_size_boundary() -> Non
                 maximum=25,
             )
     assert conn.uid_calls[-1][1][-1] == (
-        "(BODY.PEEK[HEADER.FIELDS (FROM TO CC SUBJECT DATE MESSAGE-ID)]<0.65537> FLAGS)"
+        "(UID FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO CC SUBJECT DATE MESSAGE-ID)]<0.65537>)"
     )
     assert conn.maximum == 65537
 
@@ -187,7 +187,10 @@ def test_search_retained_headers_have_an_aggregate_budget() -> None:
             self.uid_calls.append((command, args))
             if command == "SEARCH":
                 return "OK", [b" ".join(str(i).encode() for i in range(1, 101))]
-            return "OK", [(b"1 (UID 1 BODY[HEADER] {65536}", b"x" * 65536)]
+            return "OK", [
+                (f"{uid} (UID {uid} FLAGS () BODY[HEADER] {{65536}}".encode(), b"x" * 65536)
+                for uid in range(1, 101)
+            ]
 
     conn = HeaderPage()
     with ImapClient(settings(), connection_factory=lambda *_: conn) as client:

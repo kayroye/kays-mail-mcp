@@ -6,7 +6,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import date
-from typing import Protocol, TypedDict
+from typing import Annotated, Protocol, TypedDict
+
+from pydantic import Field
 
 from ..config import Settings
 from ..imap_client import ImapClient, MessageHeader
@@ -69,15 +71,49 @@ def make_search_messages(
     """create a search tool whose caller input cannot raise configured limits"""
 
     def search_messages(
-        mailbox: str,
-        query: str | None = None,
-        sender: str | None = None,
-        subject: str | None = None,
-        after_date: str | None = None,
-        before_date: str | None = None,
-        unread_only: bool = False,
-        limit: int = 25,
-        before_uid: int | None = None,
+        mailbox: Annotated[
+            str,
+            Field(
+                description="Allowed folder name, e.g. INBOX; discover others with list_mailboxes."
+            ),
+        ],
+        query: Annotated[
+            str | None,
+            Field(
+                description="Literal text searched in headers and body; not Gmail or IMAP syntax."
+            ),
+        ] = None,
+        sender: Annotated[
+            str | None, Field(description="Text to match in the From header.")
+        ] = None,
+        subject: Annotated[
+            str | None, Field(description="Text to match in the Subject header.")
+        ] = None,
+        after_date: Annotated[
+            str | None,
+            Field(description="Inclusive start of internal mail date range, YYYY-MM-DD."),
+        ] = None,
+        before_date: Annotated[
+            str | None,
+            Field(description="Exclusive end of internal mail date range, YYYY-MM-DD."),
+        ] = None,
+        unread_only: Annotated[
+            bool,
+            Field(description="Only unseen messages when true; searches do not mark mail read."),
+        ] = False,
+        limit: Annotated[
+            int,
+            Field(description="Page size, default 25; clamped to 1 through the server result cap."),
+        ] = 25,
+        before_uid: Annotated[
+            int | None,
+            Field(
+                description=(
+                    "Use next_before_uid from the last page; "
+                    "keep the same mailbox and filters."
+                )
+            ),
+        ] = None,
     ) -> SearchMessagesResult:
         """search one allowed mailbox and return compact metadata newest first"""
         clean_query = _bounded_text(query, settings.limits.max_query_length, "query")

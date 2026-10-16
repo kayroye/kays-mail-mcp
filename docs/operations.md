@@ -63,6 +63,45 @@ block administration. The generated bootstrap administrator password is in
 
 ## Upgrade and rollback
 
+### Reader-only source updates
+
+For an installation built from a checkout, a code-only reader update needs no
+package reinstall on the host. Update that checkout to the intended version first
+and review its release notes. Compose builds from `SOURCE_DIR` in your private
+`compose.env`, not necessarily your current shell directory. Confirm it points to
+the updated checkout. This procedure assumes no identity/database migrations or
+deployment-template changes and no digest-pinned `MAIL_IMAGE` release override.
+
+```bash
+config_dir="$HOME/.config/kays-mail-mcp"
+# Retain the exact running image, even if its tag has already been rebuilt.
+mail_container=$(docker compose --env-file "$config_dir/compose.env" -f "$config_dir/compose.yaml" ps -q mail)
+mail_image=$(docker inspect --format '{{.Image}}' "$mail_container")
+docker tag "$mail_image" kays-mail-mcp:reader-rollback
+docker compose --env-file "$config_dir/compose.env" -f "$config_dir/compose.yaml" build mail
+docker compose --env-file "$config_dir/compose.env" -f "$config_dir/compose.yaml" up -d --no-deps --wait mail
+docker compose --env-file "$config_dir/compose.env" -f "$config_dir/compose.yaml" exec -T gateway nginx -s reload
+```
+
+Run the commands in order and stop if any fails. Only the reader is replaced;
+nginx reloads to resolve its current container address. Identity state, login
+credentials and mail settings are preserved. Expect a short reader interruption.
+A plain `restart mail` does not install a rebuilt image. Refresh the client's
+tool discovery if its schemas remain stale, then verify a search and message read.
+
+To roll back this code-only update for the default `kays-mail-mcp:local` image:
+
+```bash
+docker tag kays-mail-mcp:reader-rollback kays-mail-mcp:local
+docker compose --env-file "$config_dir/compose.env" -f "$config_dir/compose.yaml" up -d --no-deps --wait mail
+docker compose --env-file "$config_dir/compose.env" -f "$config_dir/compose.yaml" exec -T gateway nginx -s reload
+```
+
+If your deployment uses a different image name, restore its configured tag or
+digest instead. Keep rollback images until the update is verified.
+
+### Full release upgrades
+
 Stop and back up first. Retain the previous release source and image digests.
 Extract/build the new version, read its migration notes and update `SOURCE_DIR`
 and release image references in your private `compose.env`. Rerun setup from the

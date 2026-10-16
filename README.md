@@ -70,12 +70,53 @@ capabilities. This is a private server connection, not an app-store listing.
 |---|---|
 | `list_mailboxes` | List allowed folders |
 | `search_messages` | Search a folder with bounded results |
-| `get_message` | Read a message as plain text and list its attachments |
+| `get_message` | Preview plain text (4,000 characters by default) and list attachments |
 | `get_attachment` | Retrieve a selected attachment |
 | `health_check` | Return service status without accessing mail |
 
 Message retrieval uses mailbox, UID and UIDVALIDITY. Search returns the identity
 you need; repeat the search if the mailbox identity changes.
+
+### Find mail without reading every message
+
+Start with `search_messages` on `INBOX`. For example, these are tool names and
+their JSON arguments (not shell commands):
+
+```text
+search_messages({"mailbox":"INBOX","query":"invoice","limit":10})
+```
+
+`query` is literal text searched in headers and bodies, not Gmail operators or
+raw IMAP syntax. Optional `sender`, `subject`, `after_date`, `before_date` and
+`unread_only` filters combine with AND. Dates use `YYYY-MM-DD` and filter the
+server's internal mail date: `after_date` includes that day, while `before_date`
+excludes it. Omit filters to browse recent mail. Other allowed folder names come
+from `list_mailboxes`.
+
+Search returns compact metadata in descending UID order. To continue, pass its
+`next_before_uid` as `before_uid`, keeping the mailbox and filters unchanged.
+Stop when the cursor is null. A full page can be followed by an empty page.
+
+Read only relevant matches, using their actual `uid` and `uidvalidity` values:
+
+```text
+get_message({"mailbox":"INBOX","uid":123,"uidvalidity":456})
+```
+
+The identifiers above are examples; copy yours from search. The response contains
+at most 4,000 body characters by default. If `body_truncated` is true and more text
+is needed, repeat with a larger `body_limit`, for example `16000`. This is a
+character limit, not a token budget. Short and empty bodies have
+`body_truncated: false`. Truncation applies only to the body; metadata and the
+attachment inventory remain available.
+
+Previews reduce agent context usage, but the server still downloads and parses
+the full message. Existing raw-message and decoded-body byte limits apply;
+oversized messages still fail rather than bypassing those limits. Fetch an
+attachment only when needed: `get_attachment` returns potentially large base64
+content, using the attachment's `index` and the message's mailbox identity.
+
+See [next steps](docs/next-steps.md) for the usability and performance backlog.
 
 ## Security and data
 
