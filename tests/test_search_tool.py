@@ -58,6 +58,7 @@ def test_search_returns_compact_metadata_and_clamps_limit() -> None:
         "messages": [
             {
                 "uid": 22,
+                "uidvalidity": 0,
                 "subject": "Fixture",
                 "sender": "sender@example.test",
                 "recipients": ["recipient@example.test"],

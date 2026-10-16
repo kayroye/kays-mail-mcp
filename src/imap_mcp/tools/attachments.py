@@ -14,6 +14,7 @@ from ..mime_parser import attachment_content
 class AttachmentResult(TypedDict):
     mailbox: str
     uid: int
+    uidvalidity: int
     index: int
     filename: str
     content_type: str
@@ -23,7 +24,7 @@ class AttachmentResult(TypedDict):
 class AttachmentSession(Protocol):
     def __enter__(self) -> AttachmentSession: ...
     def __exit__(self, *_: object) -> None: ...
-    def fetch_rfc822(self, mailbox: str, uid: int) -> bytes: ...
+    def fetch_rfc822(self, mailbox: str, uid: int, uidvalidity: int) -> bytes: ...
 
 
 AttachmentClientFactory = Callable[[Settings], AttachmentSession]
@@ -31,15 +32,15 @@ AttachmentClientFactory = Callable[[Settings], AttachmentSession]
 
 def make_get_attachment(
     settings: Settings, client_factory: AttachmentClientFactory = ImapClient
-) -> Callable[[str, int, int], AttachmentResult]:
+) -> Callable[[str, int, int, int], AttachmentResult]:
     """Create an attachment tool with fixed MIME and size limits."""
 
-    def get_attachment(mailbox: str, uid: int, index: int) -> AttachmentResult:
+    def get_attachment(mailbox: str, uid: int, index: int, uidvalidity: int) -> AttachmentResult:
         """Retrieve one explicitly selected allowed attachment."""
         if uid < 1 or index < 0:
             raise ValueError("uid and index must be non-negative valid identifiers")
         with client_factory(settings) as client:
-            raw_message = client.fetch_rfc822(mailbox, uid)
+            raw_message = client.fetch_rfc822(mailbox, uid, uidvalidity)
         attachment, content = attachment_content(
             raw_message,
             attachment_index=index,
@@ -48,6 +49,7 @@ def make_get_attachment(
         return {
             "mailbox": mailbox,
             "uid": uid,
+            "uidvalidity": uidvalidity,
             "index": index,
             "filename": attachment.filename,
             "content_type": attachment.content_type,

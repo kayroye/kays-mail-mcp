@@ -24,6 +24,7 @@ class GetMessageResult(TypedDict):
 
     mailbox: str
     uid: int
+    uidvalidity: int
     subject: str
     sender: str
     recipients: list[str]
@@ -40,7 +41,7 @@ class MessageSession(Protocol):
 
     def __exit__(self, *_: object) -> None: ...
 
-    def fetch_rfc822(self, mailbox: str, uid: int) -> bytes: ...
+    def fetch_rfc822(self, mailbox: str, uid: int, uidvalidity: int) -> bytes: ...
 
 
 MessageClientFactory = Callable[[Settings], MessageSession]
@@ -48,19 +49,20 @@ MessageClientFactory = Callable[[Settings], MessageSession]
 
 def make_get_message(
     settings: Settings, client_factory: MessageClientFactory = ImapClient
-) -> Callable[[str, int], GetMessageResult]:
+) -> Callable[[str, int, int], GetMessageResult]:
     """Create a complete-message tool with a non-client-overridable body limit."""
 
-    def get_message(mailbox: str, uid: int) -> GetMessageResult:
+    def get_message(mailbox: str, uid: int, uidvalidity: int) -> GetMessageResult:
         """Retrieve one mailbox-plus-UID message as safe plain text and metadata."""
         if uid < 1:
             raise ValueError("uid must be a positive IMAP UID")
         with client_factory(settings) as client:
-            raw_message = client.fetch_rfc822(mailbox, uid)
+            raw_message = client.fetch_rfc822(mailbox, uid, uidvalidity)
         parsed = parse_message(raw_message, max_body_bytes=settings.limits.max_body_bytes)
         return {
             "mailbox": mailbox,
             "uid": uid,
+            "uidvalidity": uidvalidity,
             "subject": parsed.subject,
             "sender": parsed.sender,
             "recipients": list(parsed.recipients),

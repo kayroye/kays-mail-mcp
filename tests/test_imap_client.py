@@ -20,6 +20,10 @@ class FakeConnection:
     selected: list[tuple[str, bool]] = field(default_factory=list)
     uid_calls: list[tuple[str, tuple[str, ...]]] = field(default_factory=list)
     logged_out: bool = False
+    literal: bytes | None = None
+
+    def response(self, code: str) -> tuple[str, list[bytes]]:
+        return code, [b"101"]
 
     def login(self, user: str, password: str) -> tuple[str, list[bytes]]:
         del user, password
@@ -38,6 +42,8 @@ class FakeConnection:
 
     def uid(self, command: str, *args: str) -> tuple[str, builtin_list[object]]:
         self.uid_calls.append((command, args))
+        if args[-1] == "(RFC822.SIZE)":
+            return "OK", [b"1 (UID 42 RFC822.SIZE 100)"]
         if self.fetched_message is None:
             return "OK", [None]
         return "OK", [(b"1 (RFC822 {1})", self.fetched_message)]
@@ -71,10 +77,13 @@ def test_client_fetches_by_uid_after_readonly_select() -> None:
     with ImapClient(
         settings(), connection_factory=lambda _settings, _context: connection
     ) as client:
-        assert client.fetch_rfc822("INBOX", 42).endswith(b"body")
+        assert client.fetch_rfc822("INBOX", 42, 101).endswith(b"body")
 
     assert connection.selected == [("INBOX", True)]
-    assert connection.uid_calls == [("FETCH", ("42", "(BODY.PEEK[])"))]
+    assert connection.uid_calls == [
+        ("FETCH", ("42", "(RFC822.SIZE)")),
+        ("FETCH", ("42", "(BODY.PEEK[]<0.26214401>)")),
+    ]
 
 
 def test_client_rejects_unallowed_mailboxes_and_invalid_uid() -> None:
@@ -83,14 +92,14 @@ def test_client_rejects_unallowed_mailboxes_and_invalid_uid() -> None:
         settings(), connection_factory=lambda _settings, _context: connection
     ) as client:
         with pytest.raises(MailboxNotAllowedError):
-            client.fetch_rfc822("Other", 1)
+            client.fetch_rfc822("Other", 1, 101)
         with pytest.raises(MessageNotFoundError):
-            client.fetch_rfc822("INBOX", 0)
+            client.fetch_rfc822("INBOX", 0, 101)
 
 
 def test_search_values_are_quoted_and_control_characters_are_rejected() -> None:
     criteria = _search_criteria('two "words"', "sender@example.test", None, None, None, False, None)
 
-    assert criteria == ('ALL', 'TEXT', '"two \\"words\\""', 'FROM', '"sender@example.test"')
+    assert criteria == ("ALL", "TEXT", '"two \\"words\\""', "FROM", '"sender@example.test"')
     with pytest.raises(ValueError, match="control characters"):
         _search_criteria("unsafe\r\nquery", None, None, None, None, False, None)

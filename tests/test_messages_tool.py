@@ -18,8 +18,8 @@ class FakeMessageClient:
     def __exit__(self, *_: object) -> None:
         return None
 
-    def fetch_rfc822(self, mailbox: str, uid: int) -> bytes:
-        assert (mailbox, uid) == ("INBOX", 9)
+    def fetch_rfc822(self, mailbox: str, uid: int, uidvalidity: int) -> bytes:
+        assert (mailbox, uid, uidvalidity) == ("INBOX", 9, 101)
         message = EmailMessage()
         message["Subject"] = "Fixture"
         message["From"] = "sender@example.test"
@@ -42,7 +42,7 @@ def settings() -> Settings:
 
 
 def test_get_message_returns_safe_content_and_attachment_inventory() -> None:
-    result = make_get_message(settings(), client_factory=FakeMessageClient)("INBOX", 9)
+    result = make_get_message(settings(), client_factory=FakeMessageClient)("INBOX", 9, 101)
 
     assert result["mailbox"] == "INBOX"
     assert result["uid"] == 9
@@ -56,4 +56,4 @@ def test_get_message_rejects_invalid_uid_before_connection() -> None:
     tool = make_get_message(settings(), client_factory=FakeMessageClient)
 
     with pytest.raises(ValueError, match="positive IMAP UID"):
-        tool("INBOX", 0)
+        tool("INBOX", 0, 101)

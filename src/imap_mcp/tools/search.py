@@ -15,6 +15,7 @@ class SearchMessage(TypedDict):
     """Compact message metadata keyed by the stable mailbox plus UID identity."""
 
     uid: int
+    uidvalidity: int
     subject: str
     sender: str
     recipients: list[str]
@@ -128,6 +129,7 @@ def _summary(header: MessageHeader) -> SearchMessage:
     parsed = parse_headers(header.raw_headers)
     return {
         "uid": header.uid,
+        "uidvalidity": header.uidvalidity,
         "subject": parsed.subject,
         "sender": parsed.sender,
         "recipients": list(parsed.recipients),

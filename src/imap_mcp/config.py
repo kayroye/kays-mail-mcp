@@ -24,6 +24,8 @@ class SafetyLimits:
     """Hard server-side limits applied independently of tool input."""
 
     max_results: int
+    max_message_bytes: int
+    max_concurrent_operations: int
     max_body_bytes: int
     max_attachment_bytes: int
     max_query_length: int
@@ -81,6 +83,12 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         tls_mode=tls_mode,
         allowed_mailboxes=mailboxes,
         limits=SafetyLimits(
+            max_message_bytes=_positive_int(
+                environ, "IMAP_MAX_MESSAGE_BYTES", 26_214_400, maximum=52_428_800
+            ),
+            max_concurrent_operations=_positive_int(
+                environ, "IMAP_MAX_CONCURRENT_OPERATIONS", 2, maximum=8
+            ),
             max_results=_positive_int(environ, "IMAP_MAX_RESULTS", 25, maximum=100),
             max_body_bytes=_positive_int(environ, "IMAP_MAX_BODY_BYTES", 65_536, maximum=1_048_576),
             max_attachment_bytes=_positive_int(
@@ -124,6 +132,8 @@ def _parse_mailboxes(value: str) -> tuple[str, ...]:
     mailboxes = tuple(dict.fromkeys(item.strip() for item in value.split(",") if item.strip()))
     if not mailboxes:
         raise SettingsError("IMAP_ALLOWED_MAILBOXES must contain at least one mailbox")
+    if any(any(ord(c) < 32 or ord(c) == 127 for c in mailbox) for mailbox in mailboxes):
+        raise SettingsError("mailboxes must not contain control characters")
     return mailboxes
 
 

@@ -17,7 +17,7 @@ class FakeAttachmentClient:
     def __exit__(self, *_: object) -> None:
         return None
 
-    def fetch_rfc822(self, mailbox: str, uid: int) -> bytes:
+    def fetch_rfc822(self, mailbox: str, uid: int, uidvalidity: int) -> bytes:
         assert (mailbox, uid) == ("INBOX", 7)
         message = EmailMessage()
         message.set_content("body")
@@ -41,11 +41,12 @@ def settings() -> Settings:
 def test_get_attachment_returns_json_safe_base64_content() -> None:
     tool = make_get_attachment(settings(), client_factory=FakeAttachmentClient)
 
-    result = tool("INBOX", 7, 0)
+    result = tool("INBOX", 7, 0, 101)
 
     assert result == {
         "mailbox": "INBOX",
         "uid": 7,
+        "uidvalidity": 101,
         "index": 0,
         "filename": "report.pdf",
         "content_type": "application/pdf",

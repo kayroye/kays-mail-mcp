@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import imaplib
+import re
 import ssl
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
+from functools import lru_cache
+from threading import BoundedSemaphore
 from typing import Any, Protocol
 
 from .config import Settings, TlsMode
@@ -21,6 +24,10 @@ from .errors import (
 
 class ImapConnection(Protocol):
     """Subset of IMAP commands allowed by this read-only transport."""
+
+    literal: Any
+
+    def response(self, code: str) -> tuple[str, Any]: ...
 
     def login(self, user: str, password: str) -> tuple[str, Any]: ...
 
@@ -43,6 +50,7 @@ class MessageHeader:
     uid: int
     raw_headers: bytes
     is_unread: bool
+    uidvalidity: int = 0
 
 
 class ImapClient:
@@ -54,16 +62,31 @@ class ImapClient:
         self._settings = settings
         self._connection_factory = connection_factory or _open_connection
         self._connection: ImapConnection | None = None
+        self._uidvalidity = 0
+        self._gate = _operation_gate(settings.limits.max_concurrent_operations)
+        self._acquired = False
 
     def __enter__(self) -> ImapClient:
         context = ssl.create_default_context()
+        if not self._gate.acquire(timeout=self._settings.limits.timeout_seconds):
+            raise ImapConnectionError("IMAP operation limit reached; retry later")
+        self._acquired = True
+        connection: ImapConnection | None = None
         try:
             connection = self._connection_factory(self._settings, context)
             connection.login(self._settings.username, self._settings.password)
-        except imaplib.IMAP4.error:
-            raise ImapAuthenticationError("IMAP authentication failed") from None
-        except (OSError, ssl.SSLError):
-            raise ImapConnectionError("verified IMAP TLS connection failed") from None
+        except BaseException as exc:
+            if connection is not None:
+                try:
+                    connection.logout()
+                except (OSError, imaplib.IMAP4.error):
+                    pass
+            self._release()
+            if isinstance(exc, imaplib.IMAP4.error):
+                raise ImapAuthenticationError("IMAP authentication failed") from None
+            if isinstance(exc, OSError):
+                raise ImapConnectionError("verified IMAP TLS connection failed") from None
+            raise
         self._connection = connection
         return self
 
@@ -76,6 +99,7 @@ class ImapClient:
             pass
         finally:
             self._connection = None
+            self._release()
 
     def list_mailboxes(self) -> tuple[str, ...]:
         """List only configured, existing mailboxes using their IMAP names as stable IDs."""
@@ -92,14 +116,29 @@ class ImapClient:
             mailbox for mailbox in self._settings.allowed_mailboxes if mailbox in available
         )
 
-    def fetch_rfc822(self, mailbox: str, uid: int) -> bytes:
+    def _release(self) -> None:
+        if self._acquired:
+            self._acquired = False
+            self._gate.release()
+
+    def fetch_rfc822(self, mailbox: str, uid: int, uidvalidity: int) -> bytes:
         """Fetch one message by UID after selecting its mailbox read-only."""
         if uid < 1:
             raise MessageNotFoundError("message UID was not found")
         self._select_readonly(mailbox)
+        if uidvalidity != self._uidvalidity or uidvalidity < 1:
+            raise ValueError("mailbox changed; search again before retrieving this message")
         connection = self._require_connection()
+        maximum = self._settings.limits.max_message_bytes
         try:
-            status, responses = connection.uid("FETCH", str(uid), "(BODY.PEEK[])")
+            size_status, sizes = connection.uid("FETCH", str(uid), "(RFC822.SIZE)")
+            size_data = b" ".join(item for item in sizes if isinstance(item, bytes))
+            match = re.search(rb"RFC822.SIZE (\d+)", size_data)
+            if size_status != "OK" or match is None:
+                raise MessageNotFoundError("message size was not available")
+            if int(match[1]) > maximum:
+                raise ValueError("message exceeds the configured size limit")
+            status, responses = connection.uid("FETCH", str(uid), f"(BODY.PEEK[]<0.{maximum + 1}>)")
         except (OSError, imaplib.IMAP4.error):
             raise ImapConnectionError("unable to retrieve IMAP message") from None
         if status != "OK":
@@ -107,6 +146,8 @@ class ImapClient:
 
         for response in responses:
             if isinstance(response, tuple) and len(response) > 1 and isinstance(response[1], bytes):
+                if len(response[1]) > maximum:
+                    raise ValueError("message exceeds the configured size limit")
                 return response[1]
         raise MessageNotFoundError("message UID was not found")
 
@@ -125,8 +166,15 @@ class ImapClient:
     ) -> tuple[MessageHeader, ...]:
         """Search by UID and retrieve only compact headers for a server-bounded result set."""
         self._select_readonly(mailbox)
+        unicode_search = any(value and not value.isascii() for value in (query, sender, subject))
         criteria = _search_criteria(
-            query, sender, subject, after_date, before_date, unread_only, before_uid
+            None if unicode_search else query,
+            None if unicode_search else sender,
+            None if unicode_search else subject,
+            after_date,
+            before_date,
+            unread_only,
+            before_uid,
         )
         connection = self._require_connection()
         try:
@@ -136,6 +184,19 @@ class ImapClient:
         if status != "OK":
             raise ImapConnectionError("unable to search IMAP mailbox")
         uids = _uids_from_search(responses)
+        if unicode_search:
+            for field, value in (("TEXT", query), ("FROM", sender), ("SUBJECT", subject)):
+                if value:
+                    _quote_search_value(value)
+                    connection.literal = value.encode("utf-8")
+                    try:
+                        extra_status, extra = connection.uid("SEARCH", "CHARSET", "UTF-8", field)
+                    except (OSError, imaplib.IMAP4.error):
+                        raise ImapConnectionError("UTF-8 search failed") from None
+                    if extra_status != "OK":
+                        raise ImapConnectionError("mail provider did not accept UTF-8 search")
+                    matching = set(_uids_from_search(extra))
+                    uids = tuple(uid for uid in uids if uid in matching)
         return tuple(self._fetch_header(uid) for uid in reversed(uids[-maximum:]))
 
     def _fetch_header(self, uid: int) -> MessageHeader:
@@ -153,7 +214,7 @@ class ImapClient:
         for response in responses:
             if isinstance(response, tuple) and len(response) > 1 and isinstance(response[1], bytes):
                 flags = response[0] if isinstance(response[0], bytes) else b""
-                return MessageHeader(uid, response[1], b"\\Seen" not in flags)
+                return MessageHeader(uid, response[1], b"\\Seen" not in flags, self._uidvalidity)
         raise MessageNotFoundError("message UID was not found")
 
     def _select_readonly(self, mailbox: str) -> None:
@@ -166,6 +227,10 @@ class ImapClient:
             raise ImapConnectionError("unable to select IMAP mailbox") from None
         if status != "OK":
             raise MailboxNotFoundError("mailbox was not found")
+        _, validity = connection.response("UIDVALIDITY")
+        if not validity or not isinstance(validity[0], bytes) or not validity[0].isdigit():
+            raise ImapConnectionError("mailbox did not provide a valid UIDVALIDITY")
+        self._uidvalidity = int(validity[0])
 
     def _require_connection(self) -> ImapConnection:
         if self._connection is None:
@@ -175,15 +240,19 @@ class ImapClient:
 
 def _open_connection(settings: Settings, context: ssl.SSLContext) -> ImapConnection:
     if settings.tls_mode is TlsMode.IMPLICIT_TLS:
-        return imaplib.IMAP4_SSL(
+        return LimitedIMAP4SSL(
             settings.host,
             settings.port,
+            maximum=settings.limits.max_message_bytes + 1,
             ssl_context=context,
             timeout=settings.limits.timeout_seconds,
         )
 
-    connection = imaplib.IMAP4(
-        settings.host, settings.port, timeout=settings.limits.timeout_seconds
+    connection = LimitedIMAP4(
+        settings.host,
+        settings.port,
+        maximum=settings.limits.max_message_bytes + 1,
+        timeout=settings.limits.timeout_seconds,
     )
     connection.starttls(ssl_context=context)
     return connection
@@ -228,15 +297,12 @@ def _quote_search_value(value: str) -> str:
     """Encode one bounded user value as a single safe IMAP quoted string."""
     if any(character in value for character in ("\r", "\n", "\x00")):
         raise ValueError("search values must not contain control characters")
-    try:
-        value.encode("ascii")
-    except UnicodeEncodeError as exc:
-        raise ValueError("search values currently support ASCII characters only") from exc
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def _imap_date(value: date) -> str:
-    return value.strftime("%d-%b-%Y")
+    months = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    return f"{value.day:02d}-{months[value.month - 1]}-{value.year:04d}"
 
 
 def _uids_from_search(responses: list[object]) -> tuple[int, ...]:
@@ -247,3 +313,34 @@ def _uids_from_search(responses: list[object]) -> tuple[int, ...]:
                 int(token) for token in response.split() if token.isdigit() and int(token) > 0
             )
     return tuple(values)
+
+
+@lru_cache(maxsize=8)
+def _operation_gate(maximum: int) -> BoundedSemaphore:
+    return BoundedSemaphore(maximum)
+
+
+class LimitedIMAP4SSL(imaplib.IMAP4_SSL):
+    """Reject oversized server literals before imaplib allocates their payload."""
+
+    def __init__(self, *args: Any, maximum: int, **kwargs: Any) -> None:
+        self.maximum = maximum
+        super().__init__(*args, **kwargs)
+
+    def read(self, size: int) -> bytes:
+        if size > self.maximum:
+            raise OSError("IMAP literal exceeds configured limit")
+        return super().read(size)
+
+
+class LimitedIMAP4(imaplib.IMAP4):
+    """Same literal boundary for the verified STARTTLS transport."""
+
+    def __init__(self, *args: Any, maximum: int, **kwargs: Any) -> None:
+        self.maximum = maximum
+        super().__init__(*args, **kwargs)
+
+    def read(self, size: int) -> bytes:
+        if size > self.maximum:
+            raise OSError("IMAP literal exceeds configured limit")
+        return super().read(size)
