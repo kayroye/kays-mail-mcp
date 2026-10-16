@@ -17,7 +17,9 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REDIRECT_URIS = (
@@ -308,21 +310,181 @@ def prerequisites() -> None:
 def compose(config: Path, arguments: list[str]) -> None:
     """run one Compose command with the selected private environment and file"""
     result = subprocess.run(
-        [
-            "docker",
-            "compose",
-            "--env-file",
-            str(config / "compose.env"),
-            "-f",
-            str(config / "compose.yaml"),
-            *arguments,
-        ],
+        _compose_arguments(config, arguments),
         check=False,
     )
     if result.returncode:
         raise ValueError(
             "Service startup failed. Inspect local container status; configuration is preserved."
         )
+
+
+def _compose_arguments(config: Path, arguments: list[str]) -> list[str]:
+    return [
+        "docker",
+        "compose",
+        "--env-file",
+        str(config / "compose.env"),
+        "-f",
+        str(config / "compose.yaml"),
+        *arguments,
+    ]
+
+
+def _capture(command: list[str]) -> str:
+    """capture private diagnostic output without echoing it or subprocess errors"""
+    result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=30)
+    if result.returncode:
+        raise ValueError("Service command failed; inspect container status locally")
+    return result.stdout.strip()
+
+
+def upgrade(config: Path) -> None:
+    """update only a source-built reader, retaining and restoring the running image on failure"""
+    validate_existing(config)
+    deployment = json.loads(_capture(_compose_arguments(config, ["config", "--format", "json"])))
+    mail = deployment.get("services", {}).get("mail", {})
+    context = mail.get("build", {}).get("context", "")
+    image = mail.get("image", "")
+    if not context or Path(context).resolve() != ROOT:
+        raise ValueError("SOURCE_DIR must point to this checkout before upgrading")
+    if not image or "@" in image:
+        raise ValueError(
+            "Reader-only upgrades require a source-built image; see full release upgrades"
+        )
+    container = _capture(_compose_arguments(config, ["ps", "-q", "mail"]))
+    if not container or len(container.splitlines()) != 1:
+        raise ValueError("One running reader is required; run --doctor before upgrading")
+    running_image = _capture(["docker", "inspect", "--format", "{{.Image}}", container])
+    rollback = "kays-mail-mcp:reader-rollback"
+    _capture(["docker", "tag", running_image, rollback])
+    # building first leaves the running reader available if the build fails
+    compose(config, ["build", "mail"])
+    start = ["up", "-d", "--no-deps", "--wait", "--wait-timeout", "60", "mail"]
+    reload_gateway = ["exec", "-T", "gateway", "nginx", "-s", "reload"]
+    try:
+        compose(config, start)
+        compose(config, reload_gateway)
+    except (ValueError, OSError, subprocess.TimeoutExpired):
+        try:
+            _capture(["docker", "tag", rollback, image])
+            compose(config, start)
+            compose(config, reload_gateway)
+        except (ValueError, OSError, subprocess.TimeoutExpired):
+            raise ValueError(
+                "Reader update failed and automatic rollback could not finish. "
+                "The previous image is retained as kays-mail-mcp:reader-rollback; "
+                "see docs/operations.md."
+            ) from None
+        raise ValueError("Reader update failed; rolled back to the previous image") from None
+    print("Reader upgraded; previous image retained as kays-mail-mcp:reader-rollback.")
+    print("Run ./setup.sh --doctor and refresh client tool discovery if schemas changed.")
+
+
+def _http_probe(url: str, expected_status: int, issuer: str | None = None) -> bool:
+    """check verified HTTPS status and optional issuer without displaying response contents"""
+    headers = {"Accept": "application/json"}
+    data = None
+    if expected_status == 401:
+        # stateless MCP returns 405 for GET before auth; initialize exercises the POST path
+        headers.update(
+            {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+        )
+        data = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": {"name": "kays-mail-doctor", "version": "0.1.0"},
+                },
+            }
+        ).encode()
+    try:
+        with urlopen(Request(url, data=data, headers=headers), timeout=8) as response:
+            if response.status != expected_status:
+                return False
+            if issuer is not None:
+                metadata = json.loads(response.read(65536))
+                return isinstance(metadata, dict) and metadata.get("issuer") == issuer
+            return True
+    except HTTPError as error:
+        error.close()
+        return error.code == expected_status and issuer is None
+    except (OSError, URLError, ValueError):
+        return False
+
+
+def doctor(config: Path) -> bool:
+    """diagnose containers, public routing, OAuth discovery and read-only mailbox access"""
+    validate_existing(config)
+    settings = json.loads((config / "settings.json").read_text())
+    mcp_url, login_url = _origin(settings["mcp_url"]), _origin(settings["login_url"])
+    passed = True
+
+    def report(name: str, ok: bool, recovery: str) -> None:
+        nonlocal passed
+        passed = passed and ok
+        print(("PASS " if ok else "FAIL ") + name)
+        if not ok:
+            print("  " + recovery)
+
+    try:
+        output = _capture(_compose_arguments(config, ["ps", "--all", "--format", "json"]))
+        # Compose versions emit either an array or one JSON object per line
+        rows = (
+            json.loads(output)
+            if output.startswith("[")
+            else [json.loads(line) for line in output.splitlines() if line.strip()]
+        )
+        services = {row["Service"]: row for row in rows}
+        required = {"mail", "gateway", "keycloak", "db"}
+        healthy = required <= services.keys() and all(
+            row.get("State") == "running" and row.get("Health") in (None, "", "healthy")
+            for row in services.values()
+        )
+    except (ValueError, OSError, KeyError, TypeError, subprocess.TimeoutExpired):
+        healthy = False
+    report("Services", healthy, "Inspect Compose service status and restart the failing service.")
+    report(
+        "Public MCP authentication",
+        _http_probe(mcp_url + "/mcp", 401),
+        "Check the MCP hostname, tunnel routing and OAuth configuration; "
+        "anonymous access must return 401.",
+    )
+    report(
+        "MCP discovery",
+        _http_probe(mcp_url + "/.well-known/oauth-authorization-server", 200, mcp_url + "/"),
+        "Route the MCP hostname through the gateway and check its public HTTPS certificate.",
+    )
+    issuer = login_url + "/realms/mail"
+    report(
+        "Login discovery",
+        _http_probe(issuer + "/.well-known/openid-configuration", 200, issuer),
+        "Check the login hostname route, Keycloak readiness and its configured issuer.",
+    )
+    probe = (
+        "from imap_mcp.config import load_settings\n"
+        "from imap_mcp.imap_client import ImapClient\n"
+        "with ImapClient(load_settings()) as client:\n"
+        "    if not client.list_mailboxes():\n"
+        "        raise SystemExit(1)\n"
+    )
+    try:
+        _capture(_compose_arguments(config, ["exec", "-T", "mail", "python", "-c", probe]))
+        mailbox_ok = True
+    except (ValueError, OSError, subprocess.TimeoutExpired):
+        mailbox_ok = False
+    report(
+        "Mailbox access",
+        mailbox_ok,
+        "Check the IMAP host, app-specific password, allowed folders "
+        "and outbound TLS connectivity.",
+    )
+    print("Client OAuth login and search/read still need a check from your connected client.")
+    return passed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -333,16 +495,32 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "kays-mail-mcp",
     )
-    parser.add_argument("--check", action="store_true", help="check prerequisites without changes")
-    parser.add_argument("--no-start", action="store_true", help="prepare configuration only")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--check", action="store_true", help="check prerequisites without changes")
+    modes.add_argument("--no-start", action="store_true", help="prepare configuration only")
+    modes.add_argument(
+        "--upgrade", action="store_true", help="upgrade only the source-built reader"
+    )
+    modes.add_argument(
+        "--doctor", action="store_true", help="diagnose services, HTTPS, OAuth and IMAP"
+    )
     parser.add_argument(
         "--public", action="store_true", help="enable a separately configured Cloudflare Tunnel"
     )
     args = parser.parse_args(argv)
+    if args.public and (args.upgrade or args.doctor):
+        parser.error("--public cannot be combined with --upgrade or --doctor")
     try:
         # a check-only invocation validates available tooling and existing files without setup
         prerequisites()
         config = args.config_dir.absolute()
+        if args.upgrade or args.doctor:
+            if not (config / "settings.json").exists():
+                raise ValueError("No installation found; run ./setup.sh first")
+            if args.doctor:
+                return 0 if doctor(config) else 1
+            upgrade(config)
+            return 0
         if args.check:
             if (config / "settings.json").exists():
                 validate_existing(config)
@@ -401,7 +579,7 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    except (OSError, EOFError, KeyboardInterrupt):
+    except (OSError, EOFError, KeyboardInterrupt, subprocess.TimeoutExpired):
         print(
             "Setup could not finish. Check prerequisites and inputs; existing state is preserved.",
             file=sys.stderr,

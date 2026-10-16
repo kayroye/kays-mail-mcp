@@ -64,6 +64,19 @@ Use Claude Code's `/mcp` menu to authenticate. Hosted clients have their own
 connection settings and callback URLs; support depends on their MCP and OAuth
 capabilities. This is a private server connection, not an app-store listing.
 
+## Check and upgrade an installation
+
+```bash
+./setup.sh --doctor    # services, public HTTPS/OAuth discovery and read-only IMAP access
+./setup.sh --upgrade   # rebuild and replace only the source-built mail reader
+```
+
+Update your source checkout to the desired version before upgrading; the command
+does not pull Git changes. It retains the running image for rollback, waits for
+the replacement to become healthy, and reloads the gateway. Startup/reload failure
+triggers automatic rollback. Identity/database changes use the separate full
+release procedure. See [operations](docs/operations.md).
+
 ## Tools
 
 | Tool | Purpose |

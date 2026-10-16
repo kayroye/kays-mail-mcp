@@ -21,6 +21,15 @@ This project does not mirror your mailbox, but identity/OAuth state is sensitive
 
 ## Health and logs
 
+Run `./setup.sh --doctor` from the checkout. For another installation, add
+`--config-dir /absolute/private/path`. This checks service readiness, an anonymous
+MCP initialization returning 401, public MCP and login discovery with the expected
+issuers, and read-only access to at least one allowed mailbox. Each failed check
+prints a recovery instruction. It does not restart services or print mail,
+credentials, raw container configuration or provider errors. Client OAuth consent
+and actual search/read still require a connected-client check. `--check` remains
+a prerequisites-only check.
+
 The reader reuses authenticated IMAP connections for up to 30 idle seconds, with
 one caller per connection and at most the configured operation count. A read-only
 NOOP probe checks each reused session; stale sessions are replaced before the
@@ -76,6 +85,24 @@ block administration. The generated bootstrap administrator password is in
 ## Upgrade and rollback
 
 ### Reader-only source updates
+
+After updating the checkout to the intended version, run:
+
+```bash
+./setup.sh --upgrade
+./setup.sh --doctor
+```
+
+The updater validates private configuration and requires `SOURCE_DIR` to point to
+that checkout. It tags the running image as `kays-mail-mcp:reader-rollback`, builds
+the reader while the previous container stays available, replaces only the reader
+and reloads nginx. If startup or gateway reload fails, it attempts to restore the
+previous image, waits for it and reloads nginx again. Failed automatic rollback
+reports the retained image and manual recovery location. It does not pull Git
+changes, update identity/database services or rewrite private configuration.
+Digest-pinned release installations use the full-release procedure below.
+
+The equivalent manual procedure is retained below for recovery and inspection.
 
 For an installation built from a checkout, a code-only reader update needs no
 package reinstall on the host. Update that checkout to the intended version first

@@ -121,7 +121,8 @@ def test_zero_idle_lifetime_disables_reuse(connections: list[ReusableConnection]
 
 
 def test_idle_timer_closes_connection_without_another_request(
-    connections: list[ReusableConnection], monkeypatch: pytest.MonkeyPatch,
+    connections: list[ReusableConnection],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """catch idle connections remaining open forever when no later request arrives"""
     closed = Event()
@@ -152,7 +153,8 @@ def test_checked_out_connection_is_not_closed_by_its_old_idle_timer(
 
 
 def test_failed_login_does_not_poison_pool_or_consume_a_slot(
-    connections: list[ReusableConnection], monkeypatch: pytest.MonkeyPatch,
+    connections: list[ReusableConnection],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     original_login = ReusableConnection.login
     attempts = 0

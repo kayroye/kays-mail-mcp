@@ -23,6 +23,12 @@ idle sessions automatically. `IMAP_CONNECTION_IDLE_SECONDS=0` disables reuse;
 values through 300 seconds are supported. Mailbox selection and UIDVALIDITY checks
 remain per operation.
 
+`./setup.sh --upgrade` now performs source-built reader-only upgrades with a
+retained rollback image and automatic recovery after startup/reload failure.
+`./setup.sh --doctor` checks service readiness, public MCP authentication, MCP/login
+discovery and read-only mailbox access, reporting actionable failures without
+printing credentials or mail. Neither command changes identity/database state.
+
 Download the archive and SHA256SUMS, verify the checksum, extract, then run
 `./setup.sh`. Linux x86-64, Docker Engine, Compose v2 and Python 3.11+ are required.
 Domain/tunnel authorization and mailbox credentials still require your input.

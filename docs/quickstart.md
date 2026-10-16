@@ -27,6 +27,8 @@ location with `--config-dir /absolute/private/path`.
 ```bash
 ./setup.sh --check       # prerequisites only; no changes
 ./setup.sh --no-start    # prepare settings without starting containers
+./setup.sh --doctor      # diagnose an existing installation without restarting it
+./setup.sh --upgrade     # upgrade only the source-built reader, with rollback on startup failure
 ```
 
 Reruns preserve identities, secrets and state. A failed, incomplete configuration
