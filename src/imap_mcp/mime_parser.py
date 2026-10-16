@@ -1,4 +1,6 @@
-"""Safe MIME parsing that exposes normalized metadata and plain text only."""
+"""normalize email messages into safe metadata and readable body text
+keep MIME limits and attachment policy in one place before data reaches tools
+"""
 
 from __future__ import annotations
 
@@ -25,7 +27,7 @@ ALLOWED_ATTACHMENT_TYPES = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class Attachment:
-    """Safe attachment metadata; the content remains unavailable until explicitly requested."""
+    """describe an attachment while keeping its bytes out of message results"""
 
     index: int
     filename: str
@@ -35,7 +37,7 @@ class Attachment:
 
 @dataclass(frozen=True, slots=True)
 class ParsedMessage:
-    """Normalized headers, safe body text, and an attachment inventory."""
+    """collect the normalized headers, safe body text, and attachment inventory"""
 
     subject: str
     sender: str
@@ -48,7 +50,7 @@ class ParsedMessage:
 
 @dataclass(frozen=True, slots=True)
 class ParsedHeaders:
-    """Normalized compact metadata suitable for search results."""
+    """collect compact normalized metadata for search results"""
 
     subject: str
     sender: str
@@ -58,11 +60,11 @@ class ParsedHeaders:
 
 
 class MimeParseError(ValueError):
-    """The RFC822 payload could not be safely parsed within configured limits."""
+    """report a message that cannot be parsed within the safety limits"""
 
 
 def _bounded_parse(raw: bytes) -> Message:
-    # Reject line and object-count amplification before building an email object tree.
+    # bound raw structure first because parsing builds the tree used by every later step
     if raw.count(b"\n") > 250_000:
         raise MimeParseError("message exceeds physical line limit")
     start = 0
@@ -76,6 +78,7 @@ def _bounded_parse(raw: bytes) -> Message:
     parts = 0
 
     def factory(*args: Any, **kwargs: Any) -> EmailMessage:
+        # count each part as the parser creates it so oversized MIME trees stop early
         nonlocal parts
         parts += 1
         if parts > 256:
@@ -86,7 +89,7 @@ def _bounded_parse(raw: bytes) -> Message:
 
 
 def parse_message(raw_message: bytes, *, max_body_bytes: int) -> ParsedMessage:
-    """Parse a message without returning active HTML or attachment contents."""
+    """build a safe message result by connecting headers, body text, and attachment metadata"""
     message = _bounded_parse(raw_message)
     body = _body_text(message, max_body_bytes)
     attachments = _attachments(message)
@@ -102,7 +105,7 @@ def parse_message(raw_message: bytes, *, max_body_bytes: int) -> ParsedMessage:
 
 
 def parse_headers(raw_message: bytes) -> ParsedHeaders:
-    """Parse normalized headers without reading or returning the message body."""
+    """reuse bounded parsing while extracting only the fields needed for search"""
     message = _bounded_parse(raw_message)
     return ParsedHeaders(
         subject=_decode_header(message.get("Subject")),
@@ -116,7 +119,7 @@ def parse_headers(raw_message: bytes) -> ParsedHeaders:
 def attachment_content(
     raw_message: bytes, *, attachment_index: int, max_attachment_bytes: int
 ) -> tuple[Attachment, bytes]:
-    """Return one allowed attachment only after applying the server size limit."""
+    """resolve one indexed part, enforce its type and size, then return its bytes"""
     if attachment_index < 0:
         raise MimeParseError("attachment was not found")
     message = _bounded_parse(raw_message)
@@ -137,6 +140,7 @@ def attachment_content(
 
 
 def _body_text(message: Message, max_body_bytes: int) -> str:
+    # prefer plain text and fall back to HTML only when no plain alternative exists
     candidates = list(_body_parts(message, "text/plain")) or list(_body_parts(message, "text/html"))
     if not candidates:
         return ""
@@ -147,12 +151,14 @@ def _body_text(message: Message, max_body_bytes: int) -> str:
         raise MimeParseError("body exceeds the configured size limit") from exc
     charset = candidates[0].get_content_charset() or "utf-8"
     text = payload.decode(charset, errors="replace")
+    # convert HTML to inert text before returning it, then normalize both body formats
     if candidates[0].get_content_type().lower() == "text/html":
         return html_to_text(text)
     return _normalise_text(text)
 
 
 def _body_parts(message: Message, content_type: str) -> list[Message]:
+    # exclude named or explicitly attached parts so files never become message bodies
     return [
         part
         for part in message.walk()
@@ -163,6 +169,7 @@ def _body_parts(message: Message, content_type: str) -> list[Message]:
 
 
 def _attachments(message: Message) -> tuple[Attachment, ...]:
+    # keep inventory ordering aligned with attachment_content index lookup
     items: list[Attachment] = []
     for index, part in enumerate(_attachment_parts(message)):
         payload = _decoded_payload(part)
@@ -171,6 +178,7 @@ def _attachments(message: Message) -> tuple[Attachment, ...]:
 
 
 def _attachment_parts(message: Message) -> list[Message]:
+    # treat either an attachment disposition or a filename as an attachment marker
     return [
         part
         for part in message.walk()
@@ -179,6 +187,7 @@ def _attachment_parts(message: Message) -> list[Message]:
 
 
 def _attachment_metadata(index: int, part: Message, payload: bytes) -> Attachment:
+    # use a stable fallback name so attachment results remain readable without a filename
     filename = _decode_header(part.get_filename()) or f"attachment-{index + 1}"
     return Attachment(
         index=index,
@@ -189,6 +198,7 @@ def _attachment_metadata(index: int, part: Message, payload: bytes) -> Attachmen
 
 
 def _decoded_payload(part: Message) -> bytes:
+    # centralize decoding so bodies and attachments handle malformed payloads consistently
     payload = part.get_payload(decode=True)
     if payload is None:
         return b""
@@ -198,12 +208,14 @@ def _decoded_payload(part: Message) -> bytes:
 
 
 def _decode_header(value: str | None) -> str:
+    # decode encoded words before applying the shared whitespace cleanup
     if not value:
         return ""
     return _normalise_text(str(make_header(decode_header(value))))
 
 
 def _recipient_values(message: Message) -> tuple[str, ...]:
+    # preserve To and Cc as separate display values for the normalized result
     values: list[str] = []
     for header in ("To", "Cc"):
         value = _decode_header(message.get(header))
@@ -213,15 +225,19 @@ def _recipient_values(message: Message) -> tuple[str, ...]:
 
 
 class _PlainTextHtmlParser(HTMLParser):
+    """collect visible text while skipping script-like regions and HTML attributes"""
+
     _ignored_elements = frozenset({"script", "style", "noscript", "template"})
     _block_elements = frozenset({"br", "div", "p", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6"})
 
     def __init__(self) -> None:
+        # track ignored nesting so script-like content stays suppressed until it closes
         super().__init__(convert_charrefs=True)
         self._text: list[str] = []
         self._ignored_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # ignore attributes entirely and retain only safe text and block boundaries
         del attrs
         if tag in self._ignored_elements:
             self._ignored_depth += 1
@@ -229,21 +245,24 @@ class _PlainTextHtmlParser(HTMLParser):
             self._text.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
+        # close ignored regions and separate block text for the final normalization pass
         if tag in self._ignored_elements and self._ignored_depth:
             self._ignored_depth -= 1
         elif tag in self._block_elements:
             self._text.append("\n")
 
     def handle_data(self, data: str) -> None:
+        # HTMLParser decodes character references before this data reaches the output
         if not self._ignored_depth:
             self._text.append(data)
 
     def text(self) -> str:
+        # join collected fragments once markup has been removed
         return _normalise_text("".join(self._text))
 
 
 def html_to_text(value: str) -> str:
-    """Remove markup, URLs, scripts, and remote content from HTML email bodies."""
+    """turn an HTML body into normalized text without exposing its markup"""
     parser = _PlainTextHtmlParser()
     parser.feed(value)
     parser.close()
@@ -251,4 +270,5 @@ def html_to_text(value: str) -> str:
 
 
 def _normalise_text(value: str) -> str:
+    # collapse runs of whitespace while preserving meaningful line boundaries
     return "\n".join(" ".join(line.split()) for line in value.splitlines() if line.split()).strip()

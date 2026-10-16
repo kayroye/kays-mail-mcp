@@ -1,4 +1,6 @@
-"""OIDC configuration and single-owner authorization; OAuth is delegated to FastMCP."""
+"""configure OIDC and restrict verified access to one owner
+delegate OAuth flows to FastMCP while validating secrets and redirect targets here
+"""
 
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ from .config import SettingsError
 
 @dataclass(frozen=True)
 class AuthSettings:
+    """hold validated OIDC endpoints, client credentials, and the owner identity"""
     public_url: str
     issuer: str
     discovery_url: str
@@ -29,8 +32,9 @@ class AuthSettings:
 
 
 def read_secret(path: str, name: str) -> str:
-    """Read small, regular, owner-only secret files without following symlinks."""
+    """read a small owner-only regular secret file without following symlinks"""
     try:
+        # nonblocking and no-follow flags prevent special files and symlink swaps
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, "r", encoding="utf-8") as stream:
             info = os.fstat(stream.fileno())
@@ -45,6 +49,7 @@ def read_secret(path: str, name: str) -> str:
 
 
 def https_url(value: str, name: str, *, origin_only: bool = False) -> str:
+    """validate a credential-free HTTPS URL and optionally require its origin only"""
     parsed = urlsplit(value)
     if (
         parsed.scheme != "https"
@@ -60,9 +65,11 @@ def https_url(value: str, name: str, *, origin_only: bool = False) -> str:
 
 
 def load_auth_settings(environ: Mapping[str, str] | None = None) -> AuthSettings:
+    """validate auth environment values before constructing the OIDC provider"""
     env = os.environ if environ is None else environ
 
     def required(name: str) -> str:
+        """read one required auth setting and reject control characters"""
         value = env.get(name, "").strip()
         if not value or any(ord(c) < 32 for c in value):
             raise SettingsError(f"{name} is required and must not contain control characters")
@@ -74,6 +81,7 @@ def load_auth_settings(environ: Mapping[str, str] | None = None) -> AuthSettings
     if len(signing_key) < 32:
         raise SettingsError("MCP signing key requires at least 32 random characters")
     redirects = tuple(uri.strip() for uri in required("MCP_ALLOWED_REDIRECT_URIS").split(","))
+    # allow wildcard ports only for the two explicit loopback host forms
     for uri in redirects:
         parsed = urlsplit(uri)
         if (
@@ -90,6 +98,7 @@ def load_auth_settings(environ: Mapping[str, str] | None = None) -> AuthSettings
         ):
             raise SettingsError("client redirect must be HTTPS or a loopback HTTP URL")
     discovery = env.get("OIDC_DISCOVERY_URL", issuer + "/.well-known/openid-configuration")
+    # Keycloak uses its internal service URL for discovery inside the deployment network
     if discovery != "http://keycloak:8080/realms/mail/.well-known/openid-configuration":
         https_url(discovery, "OIDC_DISCOVERY_URL")
     return AuthSettings(
@@ -105,13 +114,15 @@ def load_auth_settings(environ: Mapping[str, str] | None = None) -> AuthSettings
 
 
 class OwnerJWTVerifier(JWTVerifier):
-    """Require a verified, expiring upstream token for the exact owner subject."""
+    """require an unexpired verified token whose subject matches the configured owner"""
 
     def __init__(self, *, owner_subject: str, **kwargs: Any) -> None:
+        """keep the single permitted identity alongside the upstream verifier setup"""
         super().__init__(**kwargs)
         self.owner_subject = owner_subject
 
     async def verify_token(self, token: str) -> AccessToken | None:
+        """accept only tokens that pass upstream checks and match the owner subject"""
         verified = await super().verify_token(token)
         if (
             verified is None
@@ -123,6 +134,7 @@ class OwnerJWTVerifier(JWTVerifier):
 
 
 def create_auth(settings: AuthSettings) -> OIDCProxy:
+    """wire FastMCP OIDC proxy settings to the validated owner verifier"""
     verifier = OwnerJWTVerifier(
         owner_subject=settings.owner_subject,
         jwks_uri=settings.issuer + "/protocol/openid-connect/certs",
@@ -147,6 +159,7 @@ def create_auth(settings: AuthSettings) -> OIDCProxy:
         fallback_refresh_token_expiry_seconds=86400,
         enable_cimd=False,
     )
+    # discovery must describe the same issuer used to verify incoming access tokens
     if str(provider.oidc_config.issuer).rstrip("/") != settings.issuer:
         raise SettingsError("OIDC discovery issuer does not match the configured issuer")
     return provider
