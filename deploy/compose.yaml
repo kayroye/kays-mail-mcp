@@ -1,4 +1,6 @@
+# define the private mail and identity services with restricted container defaults
 name: kays-mail-mcp-${INSTANCE_ID:?run setup first}
+# share hardened defaults while each service adds only its required capabilities
 x-restricted: &restricted
   restart: unless-stopped
   cap_drop: [ALL]
@@ -9,6 +11,7 @@ x-restricted: &restricted
     driver: json-file
     options: {max-size: 5m, max-file: '3'}
 services:
+  # persist only identity data and keep the database on an internal network
   db:
     <<: *restricted
     image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
@@ -27,6 +30,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 30
+  # host the private OIDC issuer and import the one-time owner realm
   keycloak:
     <<: *restricted
     image: ${KEYCLOAK_IMAGE:-kays-mail-mcp-keycloak:local}
@@ -61,6 +65,7 @@ services:
       timeout: 5s
       retries: 30
       start_period: 30s
+  # expose the authenticated mail tools on the internal ingress network
   mail:
     <<: *restricted
     image: ${MAIL_IMAGE:-kays-mail-mcp:local}
@@ -90,6 +95,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+  # route public hostnames to the intended MCP or login service
   gateway:
     <<: *restricted
     image: nginx:stable-alpine@sha256:970364228b1e4f932abc22d321932816782cca8a20b85a77552a7cfe9acfb3b5
@@ -107,6 +113,7 @@ services:
       interval: 10s
       timeout: 3s
       retries: 10
+  # enable the external tunnel only when the public profile is requested
   tunnel:
     <<: *restricted
     profiles: [public]
@@ -119,6 +126,7 @@ services:
     depends_on:
       gateway: {condition: service_healthy}
 networks:
+  # isolate identity storage and ingress from direct host access
   identity: {internal: true}
   ingress: {internal: true}
   egress: {}

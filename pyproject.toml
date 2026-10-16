@@ -1,3 +1,4 @@
+# configure the package, its runtime entry point, and local development tools
 [build-system]
 requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
@@ -17,6 +18,7 @@ dependencies = [
 imap-mcp = "imap_mcp.__main__:main"
 
 [project.optional-dependencies]
+# keep checks and tests out of the production image dependencies
 dev = [
     "mypy==1.18.2",
     "pytest==9.0.3",
@@ -26,9 +28,11 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
+# install only the application package from the source tree
 packages = ["src/imap_mcp"]
 
 [tool.pytest.ini_options]
+# collect repository tests with the package source and test helpers on the path
 testpaths = ["tests"]
 pythonpath = ["tests"]
 addopts = "-q"

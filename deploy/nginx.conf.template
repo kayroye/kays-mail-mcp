@@ -1,3 +1,4 @@
+# route configured public hostnames while keeping private administration paths closed
 pid /tmp/nginx.pid;
 error_log /dev/null crit;
 worker_processes 1;
@@ -17,12 +18,14 @@ http {
   limit_req_zone $server_name zone=mail:1m rate=120r/m;
   limit_req_status 429;
   server {
+    # reject requests for hostnames that were not configured during setup
     listen 8080 default_server;
     server_name _;
     location = /healthz { return 200 'ok'; }
     location / { return 404; }
   }
   server {
+    # forward only MCP and OAuth endpoints to the mail service
     listen 8080;
     server_name @MCP_HOST@;
     proxy_set_header Host @MCP_HOST@;
@@ -40,6 +43,7 @@ http {
     location / { return 404; }
   }
   server {
+    # expose only the mail realm and static identity resources through the gateway
     listen 8080;
     server_name @LOGIN_HOST@;
     proxy_set_header Host @LOGIN_HOST@;
