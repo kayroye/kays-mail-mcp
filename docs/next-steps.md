@@ -10,9 +10,8 @@ Deployed on this machine on 2026-10-16. Container health, hosted search and mess
 reads passed. Explicit 32- and 128-character truncated reads passed through an
 in-process MCP client using the installed server package and live mailbox.
 
-The existing connected client's cached schema still omits `body_limit`; calls
-through that connection discard the new argument. Refresh its tool discovery or
-reconnect it, then verify an explicit limited read through the hosted connection.
+The plugin was refreshed and explicit 32- and 128-character truncated reads now
+pass through the hosted connection. Refresh discovery after future schema changes.
 See [reader-only upgrades](operations.md#reader-only-source-updates).
 
 ## 2. Measure and improve speed
@@ -22,6 +21,13 @@ header fetching, with byte limits, identities, ordering and flags preserved.
 Three-sample in-container median for a 25-result search fell from 3.66 to 1.12
 seconds. Hosted searches after deployment took 2.47–3.21 seconds.
 See [measurements and remaining work](performance.md).
+
+Bounded connection reuse is also deployed. Five warm in-container searches had a
+618 ms median and command counters confirmed no new TLS connection or login.
+After deployment, hosted searches had a 2.53-second median across three samples.
+Layered HTTP measurements and temporary duration-only gateway logging put roughly
+1.1–1.6 seconds of sampled health-call delay outside gateway measurements. The
+temporary log and configuration change were removed after profiling.
 
 Initial observations before batching from the connected MCP on 2026-10-16:
 
@@ -47,11 +53,10 @@ were recorded in this document.
   contents, search terms and credentials out of timing output.
 - Batching and its regression tests are complete. Check other providers against
   the same bounded UID batch behavior as compatibility testing expands.
-- Evaluate production connection pooling next. Every tool call currently
-  connects, authenticates and logs out; three same-session 25-result searches had
-  a 356 ms median after session setup. Introduce bounded reuse as a separate change
-  with exclusive ownership, stale-session recovery, mailbox-version checks and
-  the existing operation cap. This has not been deployed yet.
+- Reuse and its tests are complete. Check idle expiry and stale-session recovery
+  during longer operational runs and additional provider compatibility testing.
+- Investigate whether the hosted client/connector can reuse its MCP connection or
+  reduce repeated HTTP exchanges; this requires capabilities outside this server.
 - Investigate server-side search cost on large folders, especially UTF-8 searches
   that currently issue extra searches. Use narrower dates and sender/subject
   filters when appropriate; do not silently change matching semantics.
@@ -62,10 +67,16 @@ response size but do not reduce the current full-message IMAP download.
 
 ## 3. Make setup diagnose the complete connection
 
-Extend diagnostics beyond prerequisites/container readiness. Clearly distinguish
-public endpoint reachability, OAuth configuration and a read-only mailbox login.
-Give one actionable recovery instruction per failed check. Keep credentials out
-of diagnostics. The existing health tool intentionally does not contact IMAP.
+Complete: `./setup.sh --doctor` checks service health, anonymous MCP initialization
+requiring authentication, MCP/login discovery and read-only mailbox access. Each
+failure includes a recovery instruction, without printing private output. All five
+checks passed on this installation. Client consent and real tool use remain a
+separate verification step. The MCP health tool still does not contact IMAP.
+
+Reader-only source upgrades are now `./setup.sh --upgrade`, with a retained image,
+automatic rollback after startup/reload failure, and gateway reload. The first live
+upgrade using this command succeeded. Full identity/database release upgrades
+still follow the separate backup/migration procedure.
 
 ## 4. Simplify onboarding
 
