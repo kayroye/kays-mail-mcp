@@ -54,6 +54,7 @@ class Settings:
     allowed_mailboxes: tuple[str, ...]
     limits: SafetyLimits
     http: HttpSettings
+    connection_idle_seconds: int = 30
 
 
 def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
@@ -101,6 +102,9 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             host=environ.get("MCP_HOST", "127.0.0.1").strip() or "127.0.0.1",
             port=_positive_int(environ, "MCP_PORT", 8700, maximum=65535),
         ),
+        connection_idle_seconds=_positive_int(
+            environ, "IMAP_CONNECTION_IDLE_SECONDS", 30, maximum=300, minimum=0
+        ),
     )
 
 
@@ -141,13 +145,15 @@ def _parse_mailboxes(value: str) -> tuple[str, ...]:
     return mailboxes
 
 
-def _positive_int(environ: Mapping[str, str], name: str, default: int, *, maximum: int) -> int:
+def _positive_int(
+    environ: Mapping[str, str], name: str, default: int, *, maximum: int, minimum: int = 1
+) -> int:
     """parse one positive bounded integer for server-side settings"""
     raw_value = environ.get(name, str(default)).strip()
     try:
         value = int(raw_value)
     except ValueError as exc:
         raise SettingsError(f"{name} must be an integer") from exc
-    if not 1 <= value <= maximum:
-        raise SettingsError(f"{name} must be between 1 and {maximum}")
+    if not minimum <= value <= maximum:
+        raise SettingsError(f"{name} must be between {minimum} and {maximum}")
     return value

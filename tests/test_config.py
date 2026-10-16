@@ -57,6 +57,8 @@ def test_load_settings_accepts_password_file(tmp_path: Path) -> None:
         ({"IMAP_PASSWORD": "", "IMAP_PASSWORD_FILE": ""}, "set exactly one"),
         ({"IMAP_TLS_MODE": "plain"}, "IMAP_TLS_MODE"),
         ({"IMAP_MAX_RESULTS": "101"}, "IMAP_MAX_RESULTS"),
+        ({"IMAP_CONNECTION_IDLE_SECONDS": "-1"}, "IMAP_CONNECTION_IDLE_SECONDS"),
+        ({"IMAP_CONNECTION_IDLE_SECONDS": "301"}, "IMAP_CONNECTION_IDLE_SECONDS"),
     ],
 )
 def test_load_settings_rejects_unsafe_configuration(

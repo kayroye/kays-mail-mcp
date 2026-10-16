@@ -44,6 +44,10 @@ class FakeConnection:
         self.logged_out = True
         return "BYE", [b"logout"]
 
+    def noop(self) -> tuple[str, list[bytes]]:
+        """accept a read-only liveness probe"""
+        return "OK", [b"ready"]
+
     def list(self) -> tuple[str, Any]:
         """return the configured fixture mailbox listing"""
         return "OK", self.list_response

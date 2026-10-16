@@ -17,6 +17,12 @@ the search rather than treating an incomplete page as the end of the mailbox.
 For a source-built deployment with reader-only changes, see the short
 [upgrade and rollback procedure](operations.md#reader-only-source-updates).
 
+The reader now retains exclusively checked-out IMAP sessions for 30 idle seconds
+by default, probes them with NOOP before reuse, discards failed sessions and closes
+idle sessions automatically. `IMAP_CONNECTION_IDLE_SECONDS=0` disables reuse;
+values through 300 seconds are supported. Mailbox selection and UIDVALIDITY checks
+remain per operation.
+
 Download the archive and SHA256SUMS, verify the checksum, extract, then run
 `./setup.sh`. Linux x86-64, Docker Engine, Compose v2 and Python 3.11+ are required.
 Domain/tunnel authorization and mailbox credentials still require your input.

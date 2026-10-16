@@ -21,6 +21,18 @@ This project does not mirror your mailbox, but identity/OAuth state is sensitive
 
 ## Health and logs
 
+The reader reuses authenticated IMAP connections for up to 30 idle seconds, with
+one caller per connection and at most the configured operation count. A read-only
+NOOP probe checks each reused session; stale sessions are replaced before the
+operation. Every search/read still reselects its mailbox read-only and retrieval
+still checks UIDVALIDITY. Failed operations discard their sessions. Idle timers
+close retained connections even when there are no subsequent calls.
+
+Set `IMAP_CONNECTION_IDLE_SECONDS=0` in private `mail.env` to disable reuse, or
+choose an idle lifetime from 1 through 300 seconds. Recreate the mail container
+after changing environment configuration. Connections are isolated by the full
+validated configuration, including credentials.
+
 Container health checks prove process/database readiness, not a successful iCloud
 login. Test real mail through an authenticated read-only folder listing. Logs
 rotate and HTTP access logging is disabled to keep OAuth codes out of logs. Avoid

@@ -4,6 +4,7 @@ use validated settings and return raw message data for normalization by mime_par
 
 from __future__ import annotations
 
+import atexit
 import base64
 import imaplib
 import re
@@ -13,7 +14,8 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import date
 from functools import lru_cache
-from threading import BoundedSemaphore
+from threading import BoundedSemaphore, Lock, Timer
+from time import monotonic
 from typing import Any, Protocol
 
 from .config import Settings, TlsMode
@@ -45,6 +47,10 @@ class ImapConnection(Protocol):
         """close the authenticated connection"""
         ...
 
+    def noop(self) -> tuple[str, Any]:
+        """probe an idle connection before giving it to another caller"""
+        ...
+
     def list(self) -> tuple[str, Any]:
         """list server mailboxes before applying the configured allowlist"""
         ...
@@ -59,6 +65,102 @@ class ImapConnection(Protocol):
 
 
 ConnectionFactory = Callable[[Settings, ssl.SSLContext], ImapConnection]
+
+
+def _close_connection(connection: ImapConnection) -> None:
+    """close an idle or unusable session without exposing provider errors"""
+    try:
+        connection.logout()
+    except (OSError, imaplib.IMAP4.error):
+        pass
+
+
+@dataclass(eq=False)
+class _IdleConnection:
+    connection: ImapConnection
+    expires_at: float
+    timer: Timer | None = None
+
+
+class _ConnectionPool:
+    """retain a bounded set of idle sessions with exclusive checkout and timed expiry"""
+
+    def __init__(self, settings: Settings) -> None:
+        self._seconds = settings.connection_idle_seconds
+        self._maximum = settings.limits.max_concurrent_operations
+        self._idle: list[_IdleConnection] = []
+        self._lock = Lock()
+        self._closed = False
+
+    def take(self) -> ImapConnection | None:
+        while True:
+            with self._lock:
+                if not self._idle:
+                    return None
+                entry = self._idle.pop()
+                assert entry.timer is not None
+                entry.timer.cancel()
+            if entry.expires_at > monotonic():
+                return entry.connection
+            _close_connection(entry.connection)
+
+    def put(self, connection: ImapConnection) -> None:
+        with self._lock:
+            if not self._closed and len(self._idle) < self._maximum:
+                entry = _IdleConnection(connection, monotonic() + self._seconds)
+                entry.timer = Timer(self._seconds, self._expire, args=(entry,))
+                entry.timer.daemon = True
+                self._idle.append(entry)
+                entry.timer.start()
+                return
+        _close_connection(connection)
+
+    def _expire(self, entry: _IdleConnection) -> None:
+        with self._lock:
+            if entry not in self._idle:
+                return
+            self._idle.remove(entry)
+        _close_connection(entry.connection)
+
+    def close(self) -> None:
+        """drain idle connections during shutdown or settings eviction"""
+        with self._lock:
+            self._closed = True
+            entries, self._idle = self._idle, []
+        for entry in entries:
+            assert entry.timer is not None
+            entry.timer.cancel()
+            _close_connection(entry.connection)
+
+
+_pools: dict[Settings, _ConnectionPool] = {}
+_pools_lock = Lock()
+
+
+def _connection_pool(settings: Settings) -> _ConnectionPool:
+    """partition connections by all settings, including account credentials"""
+    evicted: _ConnectionPool | None = None
+    with _pools_lock:
+        if settings not in _pools:
+            if len(_pools) >= 8:
+                evicted = _pools.pop(next(iter(_pools)))
+            _pools[settings] = _ConnectionPool(settings)
+        pool = _pools[settings]
+    if evicted is not None:
+        evicted.close()
+    return pool
+
+
+def close_connection_pools() -> None:
+    """release retained sessions when the server shuts down"""
+    with _pools_lock:
+        pools = list(_pools.values())
+        _pools.clear()
+    for pool in pools:
+        pool.close()
+
+
+atexit.register(close_connection_pools)
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +182,12 @@ class ImapClient:
         """bind validated settings and a testable connection factory to this session"""
         self._settings = settings
         self._connection_factory = connection_factory or _open_connection
+        # explicit factories retain one-shot semantics for isolated transports and fixtures
+        self._pool = (
+            _connection_pool(settings)
+            if connection_factory is None and settings.connection_idle_seconds > 0
+            else None
+        )
         self._connection: ImapConnection | None = None
         self._uidvalidity = 0
         self._gate = _operation_gate(settings.limits.max_concurrent_operations)
@@ -87,21 +195,28 @@ class ImapClient:
 
     def __enter__(self) -> ImapClient:
         """acquire a shared operation slot before opening and authenticating a session"""
-        context = ssl.create_default_context()
         if not self._gate.acquire(timeout=self._settings.limits.timeout_seconds):
             raise ImapConnectionError("IMAP operation limit reached; retry later")
         self._acquired = True
         connection: ImapConnection | None = None
         try:
+            if self._pool is not None:
+                connection = self._pool.take()
+                if connection is not None:
+                    try:
+                        status, _ = connection.noop()
+                        if status != "OK":
+                            raise imaplib.IMAP4.abort("idle session unavailable")
+                    except (OSError, imaplib.IMAP4.error):
+                        _close_connection(connection)
+                        connection = None
             # keep a partial connection available for cleanup if login fails
-            connection = self._connection_factory(self._settings, context)
-            connection.login(self._settings.username, self._settings.password)
+            if connection is None:
+                connection = self._connection_factory(self._settings, ssl.create_default_context())
+                connection.login(self._settings.username, self._settings.password)
         except BaseException as exc:
             if connection is not None:
-                try:
-                    connection.logout()
-                except (OSError, imaplib.IMAP4.error):
-                    pass
+                _close_connection(connection)
             self._release()
             if isinstance(exc, imaplib.IMAP4.error):
                 raise ImapAuthenticationError("IMAP authentication failed") from None
@@ -111,14 +226,15 @@ class ImapClient:
         self._connection = connection
         return self
 
-    def __exit__(self, *_: object) -> None:
-        """close the session and release its shared operation slot on every exit"""
+    def __exit__(self, exc_type: object = None, *_: object) -> None:
+        """return a healthy session to the pool, discarding it on any operation failure"""
         if self._connection is None:
             return
         try:
-            self._connection.logout()
-        except (OSError, imaplib.IMAP4.error):
-            pass
+            if exc_type is None and self._pool is not None:
+                self._pool.put(self._connection)
+            else:
+                _close_connection(self._connection)
         finally:
             self._connection = None
             self._release()
