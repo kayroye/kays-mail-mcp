@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Prepare a private, rerunnable deployment without putting secrets in Git or argv."""
+"""prepare a private rerunnable deployment from interactive configuration
+keep credentials in owner-only files and generated runtime settings outside the checkout
+"""
 
 from __future__ import annotations
 
@@ -25,12 +27,14 @@ DEFAULT_REDIRECT_URIS = (
 
 
 def _clean(value: str, name: str) -> str:
+    """reject missing, oversized, or control-bearing configuration values"""
     if not value or len(value) > 2048 or any(ord(c) < 32 or ord(c) == 127 for c in value):
         raise ValueError(f"{name} is empty, too long or contains control characters")
     return value
 
 
 def _origin(value: str) -> str:
+    """reduce a public URL to a normalized HTTPS origin after strict validation"""
     parsed = urlsplit(value)
     if (
         parsed.scheme != "https"
@@ -48,18 +52,21 @@ def _origin(value: str) -> str:
 
 
 def _write(path: Path, content: str) -> None:
+    """create a new owner-only file without following symlinks or overwriting"""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as stream:
         stream.write(content)
 
 
 def _env(values: dict[str, str]) -> str:
+    """format deployment values for the compose environment file"""
     return "".join(
         name + "='" + value.replace("'", "\\'") + "'\n" for name, value in values.items()
     )
 
 
 def read_release_images(source: Path) -> dict[str, str]:
+    """load optional release images and require immutable GHCR digests"""
     manifest = source / "release-images.json"
     if not manifest.exists():
         return {}
@@ -75,7 +82,7 @@ def read_release_images(source: Path) -> dict[str, str]:
 
 
 def prepare(config: Path, answers: dict[str, str], imap_password: str, login_password: str) -> None:
-    """Write a new configuration once. Existing complete installs are never overwritten."""
+    """write a new private deployment once and preserve any complete installation"""
     if os.getuid() == 0:
         raise ValueError("Run setup as a non-root user with Docker access")
     if config.is_symlink():
@@ -87,6 +94,7 @@ def prepare(config: Path, answers: dict[str, str], imap_password: str, login_pas
         validate_existing(config)
         return
     data = {name: _clean(value.strip(), name) for name, value in answers.items()}
+    # validate both public origins and every callback before creating private state
     mcp_url, login_url = _origin(data["mcp_url"]), _origin(data["login_url"])
     if mcp_url == login_url:
         raise ValueError("MCP and login hostnames must differ")
@@ -114,6 +122,7 @@ def prepare(config: Path, answers: dict[str, str], imap_password: str, login_pas
     if any(config.iterdir()):
         raise ValueError("Incomplete/nonempty configuration: inspect it before trying again")
     config.chmod(0o700)
+    # keep mutable service state separate from source and restrict every directory
     for directory in ("secrets", "bootstrap", "keycloak-data", "auth-state"):
         (config / directory).mkdir(mode=0o700)
     images = read_release_images(ROOT)
@@ -121,10 +130,12 @@ def prepare(config: Path, answers: dict[str, str], imap_password: str, login_pas
         name: secrets.token_urlsafe(48)
         for name in ("signing_key", "oidc_client_secret", "db_password", "admin_password")
     }
+    # generate independent credentials, then add the two passwords collected interactively
     private["imap_password"] = imap_password
     for name, value in private.items():
         _write(config / "secrets" / name, value)
     subject = str(uuid.uuid4())
+    # bootstrap Keycloak with one owner and a confidential OIDC client
     realm = {
         "realm": "mail",
         "enabled": True,
@@ -236,7 +247,7 @@ def prepare(config: Path, answers: dict[str, str], imap_password: str, login_pas
             indent=2,
         ),
     )
-    # Commit marker is last. Incomplete installs never silently replace secrets.
+    # write the completion marker last so interrupted setup never looks complete
     _write(
         config / "settings.json",
         json.dumps(
@@ -246,6 +257,7 @@ def prepare(config: Path, answers: dict[str, str], imap_password: str, login_pas
 
 
 def validate_existing(config: Path) -> None:
+    """verify that generated configuration and every private directory remain owner-only"""
     for path in [
         config,
         config / "secrets",
@@ -279,6 +291,7 @@ def validate_existing(config: Path) -> None:
 
 
 def prerequisites() -> None:
+    """check Docker Compose and daemon access before creating or starting services"""
     if shutil.which("docker") is None:
         raise ValueError("Docker is required. Install Docker Engine and Docker Compose v2 first.")
     result = subprocess.run(
@@ -293,6 +306,7 @@ def prerequisites() -> None:
 
 
 def compose(config: Path, arguments: list[str]) -> None:
+    """run one Compose command with the selected private environment and file"""
     result = subprocess.run(
         [
             "docker",
@@ -312,6 +326,7 @@ def compose(config: Path, arguments: list[str]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """parse setup options, collect secrets when needed, and optionally start services"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--config-dir",
@@ -325,6 +340,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     try:
+        # a check-only invocation validates available tooling and existing files without setup
         prerequisites()
         config = args.config_dir.absolute()
         if args.check:
@@ -333,6 +349,7 @@ def main(argv: list[str] | None = None) -> int:
             print("Prerequisites checked. No services or configuration changed.")
             return 0
         if not (config / "settings.json").exists():
+            # prompt only on a terminal so secret entry stays hidden and intentional
             if not sys.stdin.isatty():
                 raise ValueError(
                     "Initial setup needs an interactive terminal for hidden password entry"
@@ -364,8 +381,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Private configuration prepared at {config}. Services were not started.")
             return 0
         build_mode = "--no-build" if read_release_images(ROOT) else "--build"
+        # wait for health checks before deleting the one-time plaintext Keycloak import
         compose(config, ["up", "-d", build_mode, "--wait", "--wait-timeout", "240"])
-        # Keycloak has imported/hashed the login credential; remove its plaintext bootstrap copy.
+        # Keycloak has imported and hashed the login credential, so remove its plaintext bootstrap copy
         (config / "bootstrap/mail-realm.json").unlink(missing_ok=True)
         if args.public:
             token_file = config / "secrets/tunnel_token"
