@@ -1,0 +1,77 @@
+services:
+  mcp-server:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: ${MCP_PORT:-8700}
+      IMAP_PASSWORD_FILE: /run/secrets/imap_password
+    ports:
+      - "127.0.0.1:${MCP_PORT:-8700}:${MCP_PORT:-8700}"
+    secrets:
+      - imap_password
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 256m
+    cpus: 0.50
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, socket; socket.create_connection(('127.0.0.1', int(os.environ['MCP_PORT'])), 3).close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+  mcp-server-dev:
+    profiles: ["dev"]
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: ${MCP_DEV_PORT:-8701}
+      IMAP_PASSWORD_FILE: /run/secrets/imap_password
+      PYTHONPATH: /app/src
+    ports:
+      - "127.0.0.1:${MCP_DEV_PORT:-8701}:${MCP_DEV_PORT:-8701}"
+    secrets:
+      - imap_password
+    volumes:
+      - ./src:/app/src:ro
+    command: ["python", "-m", "imap_mcp"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 256m
+    cpus: 0.50
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, socket; socket.create_connection(('127.0.0.1', int(os.environ['MCP_PORT'])), 3).close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+  tunnel-client:
+    build:
+      context: ./tunnel-client
+    restart: unless-stopped
+    depends_on:
+      mcp-server:
+        condition: service_healthy
+    environment:
+      CONTROL_PLANE_TUNNEL_ID: ${CONTROL_PLANE_TUNNEL_ID}
+      MCP_SERVER_URL: http://mcp-server:${MCP_PORT:-8700}/mcp
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+      HEALTH_LISTEN_ADDR: :${MCP_TUNNEL_PORT:-8702}
+    command:
+      - --control-plane.api-key=file:/run/secrets/control_plane_api_key
+    secrets:
+      - control_plane_api_key
+    ports:
+      - "127.0.0.1:${MCP_TUNNEL_PORT:-8702}:${MCP_TUNNEL_PORT:-8702}"
+
+secrets:
+  control_plane_api_key:
+    file: ./secrets/control_plane_api_key
+  imap_password:
+    file: ./secrets/imap_password
