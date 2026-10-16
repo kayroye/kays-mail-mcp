@@ -1,4 +1,6 @@
-"""Small, strictly read-only IMAP transport layer."""
+"""provide a bounded read-only IMAP transport for mailbox and message tools
+use validated settings and return raw message data for normalization by mime_parser
+"""
 
 from __future__ import annotations
 
@@ -25,22 +27,34 @@ from .errors import (
 
 
 class ImapConnection(Protocol):
-    """Subset of IMAP commands allowed by this read-only transport."""
+    """describe the small command surface used by the read-only client"""
 
     literal: Any
     maximum: int
 
-    def response(self, code: str) -> tuple[str, Any]: ...
+    def response(self, code: str) -> tuple[str, Any]:
+        """read one server response value such as UIDVALIDITY"""
+        ...
 
-    def login(self, user: str, password: str) -> tuple[str, Any]: ...
+    def login(self, user: str, password: str) -> tuple[str, Any]:
+        """authenticate the current connection"""
+        ...
 
-    def logout(self) -> tuple[str, Any]: ...
+    def logout(self) -> tuple[str, Any]:
+        """close the authenticated connection"""
+        ...
 
-    def list(self) -> tuple[str, Any]: ...
+    def list(self) -> tuple[str, Any]:
+        """list server mailboxes before applying the configured allowlist"""
+        ...
 
-    def select(self, mailbox: str, readonly: bool = False) -> tuple[str, Any]: ...
+    def select(self, mailbox: str, readonly: bool = False) -> tuple[str, Any]:
+        """select a mailbox with the caller's requested read-only mode"""
+        ...
 
-    def uid(self, command: str, *args: Any) -> tuple[str, Any]: ...
+    def uid(self, command: str, *args: Any) -> tuple[str, Any]:
+        """issue one UID-scoped search or fetch command"""
+        ...
 
 
 ConnectionFactory = Callable[[Settings, ssl.SSLContext], ImapConnection]
@@ -48,7 +62,7 @@ ConnectionFactory = Callable[[Settings, ssl.SSLContext], ImapConnection]
 
 @dataclass(frozen=True, slots=True)
 class MessageHeader:
-    """A UID and RFC822 header block returned by a read-only search."""
+    """hold one search result header and the mailbox version used to fetch it"""
 
     uid: int
     raw_headers: bytes
@@ -57,11 +71,12 @@ class MessageHeader:
 
 
 class ImapClient:
-    """Authenticated IMAP session limited to list, readonly select, and UID fetch."""
+    """manage one authenticated session with only list, readonly select, and UID fetch"""
 
     def __init__(
         self, settings: Settings, connection_factory: ConnectionFactory | None = None
     ) -> None:
+        """bind validated settings and a testable connection factory to this session"""
         self._settings = settings
         self._connection_factory = connection_factory or _open_connection
         self._connection: ImapConnection | None = None
@@ -70,12 +85,14 @@ class ImapClient:
         self._acquired = False
 
     def __enter__(self) -> ImapClient:
+        """acquire a shared operation slot before opening and authenticating a session"""
         context = ssl.create_default_context()
         if not self._gate.acquire(timeout=self._settings.limits.timeout_seconds):
             raise ImapConnectionError("IMAP operation limit reached; retry later")
         self._acquired = True
         connection: ImapConnection | None = None
         try:
+            # keep a partial connection available for cleanup if login fails
             connection = self._connection_factory(self._settings, context)
             connection.login(self._settings.username, self._settings.password)
         except BaseException as exc:
@@ -94,6 +111,7 @@ class ImapClient:
         return self
 
     def __exit__(self, *_: object) -> None:
+        """close the session and release its shared operation slot on every exit"""
         if self._connection is None:
             return
         try:
@@ -105,7 +123,7 @@ class ImapClient:
             self._release()
 
     def list_mailboxes(self) -> tuple[str, ...]:
-        """List only configured, existing mailboxes using their IMAP names as stable IDs."""
+        """return only allowlisted mailboxes that the server reports as existing"""
         connection = self._require_connection()
         try:
             status, responses = connection.list()
@@ -120,19 +138,22 @@ class ImapClient:
         )
 
     def _release(self) -> None:
+        """release the semaphore once even when setup and cleanup both reach this path"""
         if self._acquired:
             self._acquired = False
             self._gate.release()
 
     def fetch_rfc822(self, mailbox: str, uid: int, uidvalidity: int) -> bytes:
-        """Fetch one message by UID after selecting its mailbox read-only."""
+        """fetch one size-checked message by UID from a read-only mailbox selection"""
         if uid < 1:
             raise MessageNotFoundError("message UID was not found")
         self._select_readonly(mailbox)
+        # a changed UIDVALIDITY makes search results unsafe to reuse for retrieval
         if uidvalidity != self._uidvalidity or uidvalidity < 1:
             raise ValueError("mailbox changed; search again before retrieving this message")
         connection = self._require_connection()
         maximum = self._settings.limits.max_message_bytes
+        # ask imaplib to reject oversized literals before accepting the payload
         connection.maximum = maximum + 1
         try:
             size_status, sizes = connection.uid("FETCH", str(uid), "(RFC822.SIZE)")
@@ -168,8 +189,9 @@ class ImapClient:
         before_uid: int | None,
         maximum: int,
     ) -> tuple[MessageHeader, ...]:
-        """Search by UID and retrieve only compact headers for a server-bounded result set."""
+        """search by UID and fetch bounded headers for the newest matching results"""
         self._select_readonly(mailbox)
+        # use server-side ASCII criteria first, then intersect UTF-8 matches when needed
         unicode_search = any(value and not value.isascii() for value in (query, sender, subject))
         criteria = _search_criteria(
             None if unicode_search else query,
@@ -203,6 +225,7 @@ class ImapClient:
                     uids = tuple(uid for uid in uids if uid in matching)
         headers = []
         total_bytes = 0
+        # fetch newest UIDs first while enforcing an aggregate cap across all headers
         for uid in reversed(uids[-maximum:]):
             header = self._fetch_header(uid)
             total_bytes += len(header.raw_headers)
@@ -212,6 +235,7 @@ class ImapClient:
         return tuple(headers)
 
     def _fetch_header(self, uid: int) -> MessageHeader:
+        """fetch the fixed header allowlist and attach current mailbox version metadata"""
         connection = self._require_connection()
         connection.maximum = 65_537
         try:
@@ -233,6 +257,7 @@ class ImapClient:
         raise MessageNotFoundError("message UID was not found")
 
     def _select_readonly(self, mailbox: str) -> None:
+        """enforce the configured allowlist and refresh UIDVALIDITY on read-only selection"""
         if mailbox not in self._settings.allowed_mailboxes:
             raise MailboxNotAllowedError("mailbox is not allowed")
         connection = self._require_connection()
@@ -252,12 +277,14 @@ class ImapClient:
             raise ImapConnectionError("mailbox did not provide a valid UIDVALIDITY")
 
     def _require_connection(self) -> ImapConnection:
+        """return the active connection or fail before issuing an IMAP command"""
         if self._connection is None:
             raise ImapConnectionError("IMAP session is not connected")
         return self._connection
 
 
 def _open_connection(settings: Settings, context: ssl.SSLContext) -> ImapConnection:
+    """open the configured implicit TLS or verified STARTTLS connection"""
     if settings.tls_mode is TlsMode.IMPLICIT_TLS:
         return LimitedIMAP4SSL(
             settings.host,
@@ -278,9 +305,10 @@ def _open_connection(settings: Settings, context: ssl.SSLContext) -> ImapConnect
 
 
 def _encode_mailbox(value: str) -> str:
-    """IMAP4rev1 mailbox names use modified UTF-7, independently of search charset."""
+    """encode mailbox names as modified UTF-7 independently of search charset"""
 
     def encoded(match: re.Match[str]) -> str:
+        """encode one non-ASCII run and apply modified UTF-7 substitutions"""
         payload = base64.b64encode(match[0].encode("utf-16-be")).decode().rstrip("=")
         return "&" + payload.replace("/", ",") + "-"
 
@@ -288,7 +316,7 @@ def _encode_mailbox(value: str) -> str:
 
 
 def _mailbox_name(response: bytes | tuple[bytes, bytes]) -> str:
-    """Decode quoted, escaped or literal LIST names without interpreting commands."""
+    """decode quoted or literal LIST names without treating their contents as commands"""
     try:
         encoded = (
             response[1].decode("ascii")
@@ -297,6 +325,7 @@ def _mailbox_name(response: bytes | tuple[bytes, bytes]) -> str:
         )
 
         def decoded(match: re.Match[str]) -> str:
+            """decode one modified UTF-7 run from the server mailbox name"""
             payload = match[1].replace(",", "/")
             return (
                 (
@@ -322,8 +351,10 @@ def _search_criteria(
     unread_only: bool,
     before_uid: int | None,
 ) -> tuple[str, ...]:
+    """build IMAP criteria from validated filters and an optional UID cursor"""
     criteria: list[str] = ["ALL"]
     if before_uid is not None:
+        # exclude the cursor UID itself so each subsequent page moves backward
         criteria.extend(("UID", f"1:{before_uid - 1}"))
     if unread_only:
         criteria.append("UNSEEN")
@@ -341,18 +372,20 @@ def _search_criteria(
 
 
 def _quote_search_value(value: str) -> str:
-    """Encode one bounded user value as a single safe IMAP quoted string."""
+    """escape one bounded user value as a single safe IMAP quoted string"""
     if any(character in value for character in ("\r", "\n", "\x00")):
         raise ValueError("search values must not contain control characters")
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def _imap_date(value: date) -> str:
+    """format a date using the month names required by IMAP search criteria"""
     months = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
     return f"{value.day:02d}-{months[value.month - 1]}-{value.year:04d}"
 
 
 def _uids_from_search(responses: list[object]) -> tuple[int, ...]:
+    """collect positive numeric UIDs from search response byte strings"""
     values: list[int] = []
     for response in responses:
         if isinstance(response, bytes):
@@ -364,30 +397,35 @@ def _uids_from_search(responses: list[object]) -> tuple[int, ...]:
 
 @lru_cache(maxsize=8)
 def _operation_gate(maximum: int) -> BoundedSemaphore:
+    """reuse one process-wide semaphore for each configured concurrency limit"""
     return BoundedSemaphore(maximum)
 
 
 class LimitedIMAP4SSL(imaplib.IMAP4_SSL):
-    """Reject oversized server literals before imaplib allocates their payload."""
+    """reject oversized server literals before imaplib allocates their payload"""
 
     def __init__(self, *args: Any, maximum: int, **kwargs: Any) -> None:
+        """store the literal bound before initializing the standard TLS client"""
         self.maximum = maximum
         super().__init__(*args, **kwargs)
 
     def read(self, size: int) -> bytes:
+        """enforce the configured literal bound before delegating the read"""
         if size > self.maximum:
             raise OSError("IMAP literal exceeds configured limit")
         return super().read(size)
 
 
 class LimitedIMAP4(imaplib.IMAP4):
-    """Same literal boundary for the verified STARTTLS transport."""
+    """apply the same literal boundary to the verified STARTTLS transport"""
 
     def __init__(self, *args: Any, maximum: int, **kwargs: Any) -> None:
+        """store the literal bound before initializing the standard IMAP client"""
         self.maximum = maximum
         super().__init__(*args, **kwargs)
 
     def read(self, size: int) -> bytes:
+        """enforce the configured literal bound before delegating the read"""
         if size > self.maximum:
             raise OSError("IMAP literal exceeds configured limit")
         return super().read(size)
