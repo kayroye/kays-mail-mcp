@@ -383,7 +383,7 @@ def main(argv: list[str] | None = None) -> int:
         build_mode = "--no-build" if read_release_images(ROOT) else "--build"
         # wait for health checks before deleting the one-time plaintext Keycloak import
         compose(config, ["up", "-d", build_mode, "--wait", "--wait-timeout", "240"])
-        # Keycloak has imported and hashed the login credential, so remove its plaintext bootstrap copy
+        # remove the plaintext bootstrap credential after Keycloak imports and hashes it
         (config / "bootstrap/mail-realm.json").unlink(missing_ok=True)
         if args.public:
             token_file = config / "secrets/tunnel_token"

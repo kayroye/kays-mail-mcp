@@ -66,7 +66,7 @@ def make_get_message(
             raise ValueError("uid must be a positive IMAP UID")
         with client_factory(settings) as client:
             raw_message = client.fetch_rfc822(mailbox, uid, uidvalidity)
-            # hand raw bytes to mime_parser so headers, body, and attachment metadata share one policy
+            # pass raw bytes to mime_parser for shared body and attachment handling
             parsed = parse_message(raw_message, max_body_bytes=settings.limits.max_body_bytes)
             return {
                 "mailbox": mailbox,
