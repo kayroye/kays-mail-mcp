@@ -18,6 +18,10 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_REDIRECT_URIS = (
+    "http://127.0.0.1:*/callback,http://127.0.0.1:*/callback/*,"
+    "http://localhost:*/callback,https://chatgpt.com/connector_platform_oauth_redirect"
+)
 
 
 def _clean(value: str, name: str) -> str:
@@ -163,7 +167,7 @@ def prepare(config: Path, answers: dict[str, str], imap_password: str, login_pas
                 "directAccessGrantsEnabled": False,
                 "serviceAccountsEnabled": False,
                 "redirectUris": [mcp_url + "/auth/callback"],
-                "defaultClientScopes": ["email", "profile"],
+                "defaultClientScopes": ["basic", "email", "profile"],
                 "attributes": {"pkce.code.challenge.method": "S256"},
                 "protocolMappers": [
                     {
@@ -346,9 +350,9 @@ def main(argv: list[str] | None = None) -> int:
                 ).strip(),
                 "mailboxes": input("Mailboxes [INBOX]: ").strip() or "INBOX",
                 "redirect_uris": input(
-                    "Allowed client callback URLs, comma-separated [local Codex only]: "
+                    "Allowed client callback URLs, comma-separated [local Codex + ChatGPT web]: "
                 ).strip()
-                or "http://127.0.0.1:*/callback,http://127.0.0.1:*/callback/*,http://localhost:*/callback",
+                or DEFAULT_REDIRECT_URIS,
             }
             password = getpass.getpass("Mail app-specific password: ")
             login_password = getpass.getpass("New MCP login password (12+ characters): ")

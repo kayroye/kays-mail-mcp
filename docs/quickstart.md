@@ -65,10 +65,18 @@ route through the gateway. A TLS-terminating proxy can read proxied traffic.
 Add `https://your-mail-host/mcp` as a remote HTTP MCP server and authenticate in
 the browser with your setup email/password. Do not use your iCloud password here.
 
-Default callback rules permit local Codex loopback callbacks. Hosted clients need
-their documented exact callback URL added to `MCP_ALLOWED_REDIRECT_URIS` in your
+Default callback rules permit local Codex loopback callbacks and ChatGPT web’s
+stable callback, `https://chatgpt.com/connector_platform_oauth_redirect`. Other
+callbacks need their documented exact URL added to `MCP_ALLOWED_REDIRECT_URIS` in your
 private `mail.env`, separated by commas. Restart the reader after changes. Do not
 allow arbitrary callback origins or take callback URLs from untrusted pages.
+
+For ChatGPT web, create a remote MCP connection in its connection settings, choose
+OAuth, and enter your MCP URL. Use dynamic client registration (DCR) if asked.
+Copy the exact redirect URI shown by ChatGPT; if it differs from the default, add
+that exact URI to your allowlist before authenticating. See OpenAI’s
+[authentication documentation](https://developers.openai.com/plugins/build/auth#redirect-url)
+for callback behavior. Hosted client availability depends on your plan/workspace.
 
 Codex CLI:
 

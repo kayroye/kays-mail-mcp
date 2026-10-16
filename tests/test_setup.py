@@ -42,6 +42,7 @@ def test_setup_rerun_preserves_credentials_and_builds_valid_private_configuratio
     assert realm["users"][0]["id"] == settings["owner_subject"]
     assert realm["users"][0]["credentials"][0]["value"] == "owner-login-secret"
     assert realm["clients"][0]["redirectUris"] == ["https://mail.example.test/auth/callback"]
+    assert "basic" in realm["clients"][0]["defaultClientScopes"]
     assert realm["clients"][0]["directAccessGrantsEnabled"] is False
     assert stat.S_IMODE(config.stat().st_mode) == 0o700
     assert stat.S_IMODE((config / "secrets/signing_key").stat().st_mode) == 0o600

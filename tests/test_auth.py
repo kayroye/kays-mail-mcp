@@ -170,6 +170,7 @@ def test_oauth_discovery_and_client_registration_enforce_our_callback_policy() -
         with TestClient(server.http_app(stateless_http=True)) as client:
             metadata = client.get("/.well-known/oauth-authorization-server").json()
             assert metadata["code_challenge_methods_supported"] == ["S256"]
+            assert metadata["authorization_response_iss_parameter_supported"] is True
             bad = client.post(
                 "/register",
                 json={
