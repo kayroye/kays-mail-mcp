@@ -33,7 +33,7 @@ class Form(HTMLParser):
 def main() -> None:
     base = "https://mail.example.test"
     if "--resume" in sys.argv:
-        tokens = json.loads(Path("/fixtures/session.json").read_text())
+        tokens = json.loads(Path("/state/integration-session.json").read_text())
         with httpx2.Client(timeout=20) as client:
             result = client.post(
                 base + "/mcp",
@@ -59,6 +59,10 @@ def main() -> None:
     )
     with httpx2.Client(timeout=20, follow_redirects=False, trust_env=True) as client:
         assert client.post(base + "/mcp", json={}).status_code == 401
+        metadata = client.get(base + "/.well-known/oauth-authorization-server").json()
+        assert metadata["authorization_response_iss_parameter_supported"] is True
+        protected = client.get(base + "/.well-known/oauth-protected-resource/mcp").json()
+        assert protected["authorization_servers"] == [metadata["issuer"]]
         assert client.get("https://login.example.test/admin/").status_code == 404
         assert client.get("https://login.example.test/realms/master/").status_code == 404
         registration = client.post(
@@ -91,7 +95,7 @@ def main() -> None:
                 if destination.startswith(callback):
                     query = parse_qs(urlsplit(destination).query)
                     assert query.get("state") == ["fixture-state"]
-                    assert query.get("iss") == [base]
+                    assert query.get("iss") == [metadata["issuer"]]
                     assert "code" in query, query.get("error")
                     break
                 response = client.get(destination)
@@ -170,7 +174,7 @@ def main() -> None:
             },
         )
         assert refreshed.status_code == 200
-        fd = os.open("/fixtures/session.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        fd = os.open("/state/integration-session.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w") as stream:
             json.dump({"access_token": refreshed.json()["access_token"]}, stream)
         print(
