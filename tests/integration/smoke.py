@@ -1,4 +1,6 @@
-"""Run disposable real Keycloak/OAuth/TLS containers, without any real mail credentials."""
+"""run disposable Keycloak, OAuth, and TLS containers with synthetic credentials
+exercise the complete deployment flow without using a real mail account
+"""
 
 from __future__ import annotations
 
@@ -19,10 +21,12 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def main() -> None:
+    """prepare temporary state, run the container smoke flow, and always tear it down"""
     spec = importlib.util.spec_from_file_location("mail_setup", ROOT / "scripts/setup.py")
     assert spec and spec.loader
     setup = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(setup)
+    # keep generated secrets, certificates, and service state inside one temporary directory
     with tempfile.TemporaryDirectory(prefix="kays-mail-integration-") as directory:
         work = Path(directory)
         config = work / "config"
@@ -41,12 +45,14 @@ def main() -> None:
             "synthetic-owner-password",
         )
         with socket.socket() as listener:
+            # reserve a free loopback port for the local Keycloak administration listener
             listener.bind(("127.0.0.1", 0))
             port = listener.getsockname()[1]
         with (config / "compose.env").open("a") as stream:
             stream.write(f"ADMIN_PORT={port}\n")
         fixtures = work / "fixtures"
         fixtures.mkdir(mode=0o700)
+        # create a short-lived self-signed certificate for the two fixture hostnames
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Disposable mail MCP fixture")])
         now = dt.datetime.now(dt.UTC)
@@ -113,6 +119,7 @@ def main() -> None:
         }
         overlay = work / "test-compose.json"
         overlay.write_text(json.dumps(override))
+        # reuse the generated Compose files and layer test-only TLS aliases over them
         command = [
             "docker",
             "compose",
@@ -130,7 +137,7 @@ def main() -> None:
             subprocess.run(
                 [*command, "exec", "-T", "mail", "python", "/fixtures/oauth_client.py"], check=True
             )
-            # Verify state survives restarting the same service without rebuilding/reprovisioning.
+            # verify state survives restarting the same service without rebuilding or reprovisioning
             subprocess.run([*command, "restart", "mail"], check=True)
             subprocess.run([*command, "up", "-d", "--wait", "--wait-timeout", "60"], check=True)
             subprocess.run(

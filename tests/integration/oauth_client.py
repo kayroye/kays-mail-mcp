@@ -1,4 +1,6 @@
-"""Disposable browser/client flow, executed inside the smoke-test mail container."""
+"""simulate a disposable browser OAuth flow from inside the smoke-test mail container
+use synthetic credentials to verify TLS, callback policy, token exchange, and MCP access
+"""
 
 from __future__ import annotations
 
@@ -16,13 +18,17 @@ import httpx2
 
 
 class Form(HTMLParser):
+    """collect a form action and its hidden values from an identity page"""
+
     def __init__(self, html: str) -> None:
+        """parse one HTML page and initialize the fields used by the client flow"""
         super().__init__()
         self.action = ""
         self.values: dict[str, str] = {}
         self.feed(html)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """capture the current form action and hidden input values"""
         data = dict(attrs)
         if tag == "form":
             self.action = data.get("action") or ""
@@ -31,8 +37,10 @@ class Form(HTMLParser):
 
 
 def main() -> None:
+    """run or resume the synthetic OAuth client flow and verify protected MCP calls"""
     base = "https://mail.example.test"
     if "--resume" in sys.argv:
+        # check that a refreshed access token remains valid after the mail container restarts
         tokens = json.loads(Path("/state/integration-session.json").read_text())
         with httpx2.Client(timeout=20) as client:
             result = client.post(
@@ -53,6 +61,7 @@ def main() -> None:
         print("PASS: previously issued token works after container restart")
         return
     callback = "https://chatgpt.com/connector_platform_oauth_redirect"
+    # derive the PKCE challenge from a verifier kept only in this client process
     verifier = secrets.token_urlsafe(48)
     challenge = (
         base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
@@ -65,6 +74,7 @@ def main() -> None:
         assert protected["authorization_servers"] == [metadata["issuer"]]
         assert client.get("https://login.example.test/admin/").status_code == 404
         assert client.get("https://login.example.test/realms/master/").status_code == 404
+        # register a public client using only the callback allowed by this integration setup
         registration = client.post(
             base + "/register",
             json={
@@ -89,6 +99,7 @@ def main() -> None:
                 "resource": base + "/mcp",
             },
         )
+        # follow login and consent pages until the authorization server redirects to the callback
         for _ in range(12):
             if response.status_code in (301, 302, 303, 307, 308):
                 destination = urljoin(str(response.url), response.headers["location"])
@@ -104,6 +115,7 @@ def main() -> None:
                 form = Form(response.text)
                 data = form.values
                 if urlsplit(str(response.url)).hostname == "mail.example.test":
+                    # approve only after the proxy presents the expected consent form
                     assert "csrf_token" in data
                     data["action"] = "approve"
                 else:
@@ -132,6 +144,7 @@ def main() -> None:
         )
         assert exchange.status_code == 200, (exchange.status_code, exchange.text[:150])
         tokens = exchange.json()
+        # use the issued owner token for initialization and a harmless health tool call
         headers = {
             "Authorization": "Bearer " + tokens["access_token"],
             "Accept": "application/json, text/event-stream",
@@ -174,6 +187,7 @@ def main() -> None:
             },
         )
         assert refreshed.status_code == 200
+        # persist only the refreshed token for the restart half of the smoke test
         fd = os.open("/state/integration-session.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w") as stream:
             json.dump({"access_token": refreshed.json()["access_token"]}, stream)
