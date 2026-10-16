@@ -3,7 +3,8 @@
 Use a Linux x86-64 server with Docker Engine, Compose v2, Bash and Python 3.11+.
 Allow about 2 GiB RAM and several GiB of disk for images and identity state.
 Other architectures are not advertised as supported yet. Docker access grants
-administrative capabilities; use a server account you trust.
+administrative capabilities; use a non-root server account you trust. Setup
+refuses root so application containers do not accidentally run as root.
 
 Choose two HTTPS hostnames, one for MCP and one for login. Existing mail delivery,
 MX records and Thunderbird configuration do not need changes. For iCloud, use

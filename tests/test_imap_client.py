@@ -21,6 +21,7 @@ class FakeConnection:
     uid_calls: list[tuple[str, tuple[str, ...]]] = field(default_factory=list)
     logged_out: bool = False
     literal: bytes | None = None
+    maximum: int = 26_214_401
 
     def response(self, code: str) -> tuple[str, list[bytes]]:
         return code, [b"101"]
@@ -79,7 +80,7 @@ def test_client_fetches_by_uid_after_readonly_select() -> None:
     ) as client:
         assert client.fetch_rfc822("INBOX", 42, 101).endswith(b"body")
 
-    assert connection.selected == [("INBOX", True)]
+    assert connection.selected == [('"INBOX"', True)]
     assert connection.uid_calls == [
         ("FETCH", ("42", "(RFC822.SIZE)")),
         ("FETCH", ("42", "(BODY.PEEK[]<0.26214401>)")),

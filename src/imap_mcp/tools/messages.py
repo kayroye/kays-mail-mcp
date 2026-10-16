@@ -58,26 +58,26 @@ def make_get_message(
             raise ValueError("uid must be a positive IMAP UID")
         with client_factory(settings) as client:
             raw_message = client.fetch_rfc822(mailbox, uid, uidvalidity)
-        parsed = parse_message(raw_message, max_body_bytes=settings.limits.max_body_bytes)
-        return {
-            "mailbox": mailbox,
-            "uid": uid,
-            "uidvalidity": uidvalidity,
-            "subject": parsed.subject,
-            "sender": parsed.sender,
-            "recipients": list(parsed.recipients),
-            "date": parsed.date,
-            "message_id": parsed.message_id,
-            "body": parsed.body,
-            "attachments": [
-                {
-                    "index": attachment.index,
-                    "filename": attachment.filename,
-                    "content_type": attachment.content_type,
-                    "size_bytes": attachment.size_bytes,
-                }
-                for attachment in parsed.attachments
-            ],
-        }
+            parsed = parse_message(raw_message, max_body_bytes=settings.limits.max_body_bytes)
+            return {
+                "mailbox": mailbox,
+                "uid": uid,
+                "uidvalidity": uidvalidity,
+                "subject": parsed.subject,
+                "sender": parsed.sender,
+                "recipients": list(parsed.recipients),
+                "date": parsed.date,
+                "message_id": parsed.message_id,
+                "body": parsed.body,
+                "attachments": [
+                    {
+                        "index": attachment.index,
+                        "filename": attachment.filename,
+                        "content_type": attachment.content_type,
+                        "size_bytes": attachment.size_bytes,
+                    }
+                    for attachment in parsed.attachments
+                ],
+            }
 
     return get_message

@@ -119,3 +119,21 @@ def test_release_requires_digest_pinned_images(tmp_path: Path) -> None:
         )
     )
     assert setup.read_release_images(tmp_path)["MAIL_IMAGE"].endswith("@sha256:" + "a" * 64)
+
+
+def test_root_setup_is_rejected_instead_of_running_application_containers_as_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(setup.os, "getuid", lambda: 0)
+    with pytest.raises(ValueError, match="non-root"):
+        setup.prepare(tmp_path / "private", answers(), "secret", "owner-login-secret")
+
+
+def test_existing_configuration_rejects_symlinked_secret_directory(tmp_path: Path) -> None:
+    config = tmp_path / "private"
+    setup.prepare(config, answers(), "secret", "owner-login-secret")
+    (config / "secrets").rename(tmp_path / "elsewhere")
+    (config / "secrets").symlink_to(tmp_path / "elsewhere")
+    with pytest.raises(ValueError):
+        setup.prepare(config, answers(), "secret", "owner-login-secret")

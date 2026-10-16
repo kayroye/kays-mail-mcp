@@ -34,3 +34,12 @@ No response-time or support guarantee is currently offered.
 Never expose the reader directly, enable public owner registration, allow arbitrary
 OAuth callback origins, disable TLS verification, or mount the Docker socket into
 an application container.
+
+## Parsing budgets
+
+Each search header is capped at 64 KiB, with a 4 MiB aggregate retained-header
+budget. Raw messages default to 25 MiB (configuration ceiling 50 MiB). Parsing
+rejects more than 256 MIME parts, 250,000 physical lines or a physical line over
+1 MiB. These intentional limits can reject unusual but otherwise readable mail.
+IMAP operation concurrency protection remains held during parsing. Existing body,
+attachment, result and timeout limits apply independently.

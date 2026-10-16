@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import imaplib
 import re
+import shlex
 import ssl
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -26,6 +28,7 @@ class ImapConnection(Protocol):
     """Subset of IMAP commands allowed by this read-only transport."""
 
     literal: Any
+    maximum: int
 
     def response(self, code: str) -> tuple[str, Any]: ...
 
@@ -130,6 +133,7 @@ class ImapClient:
             raise ValueError("mailbox changed; search again before retrieving this message")
         connection = self._require_connection()
         maximum = self._settings.limits.max_message_bytes
+        connection.maximum = maximum + 1
         try:
             size_status, sizes = connection.uid("FETCH", str(uid), "(RFC822.SIZE)")
             size_data = b" ".join(item for item in sizes if isinstance(item, bytes))
@@ -197,15 +201,24 @@ class ImapClient:
                         raise ImapConnectionError("mail provider did not accept UTF-8 search")
                     matching = set(_uids_from_search(extra))
                     uids = tuple(uid for uid in uids if uid in matching)
-        return tuple(self._fetch_header(uid) for uid in reversed(uids[-maximum:]))
+        headers = []
+        total_bytes = 0
+        for uid in reversed(uids[-maximum:]):
+            header = self._fetch_header(uid)
+            total_bytes += len(header.raw_headers)
+            if total_bytes > 4_194_304:
+                raise ValueError("search headers exceed aggregate size limit; reduce result count")
+            headers.append(header)
+        return tuple(headers)
 
     def _fetch_header(self, uid: int) -> MessageHeader:
         connection = self._require_connection()
+        connection.maximum = 65_537
         try:
             status, responses = connection.uid(
                 "FETCH",
                 str(uid),
-                "(BODY.PEEK[HEADER.FIELDS (FROM TO CC SUBJECT DATE MESSAGE-ID)] FLAGS)",
+                "(BODY.PEEK[HEADER.FIELDS (FROM TO CC SUBJECT DATE MESSAGE-ID)]<0.65537> FLAGS)",
             )
         except (OSError, imaplib.IMAP4.error):
             raise ImapConnectionError("unable to retrieve IMAP message headers") from None
@@ -213,6 +226,8 @@ class ImapClient:
             raise MessageNotFoundError("message UID was not found")
         for response in responses:
             if isinstance(response, tuple) and len(response) > 1 and isinstance(response[1], bytes):
+                if len(response[1]) > 65_536:
+                    raise ValueError("message header exceeds size limit")
                 flags = response[0] if isinstance(response[0], bytes) else b""
                 return MessageHeader(uid, response[1], b"\\Seen" not in flags, self._uidvalidity)
         raise MessageNotFoundError("message UID was not found")
@@ -222,7 +237,9 @@ class ImapClient:
             raise MailboxNotAllowedError("mailbox is not allowed")
         connection = self._require_connection()
         try:
-            status, _ = connection.select(mailbox, readonly=True)
+            status, _ = connection.select(
+                _quote_search_value(_encode_mailbox(mailbox)), readonly=True
+            )
         except (OSError, imaplib.IMAP4.error):
             raise ImapConnectionError("unable to select IMAP mailbox") from None
         if status != "OK":
@@ -231,6 +248,8 @@ class ImapClient:
         if not validity or not isinstance(validity[0], bytes) or not validity[0].isdigit():
             raise ImapConnectionError("mailbox did not provide a valid UIDVALIDITY")
         self._uidvalidity = int(validity[0])
+        if self._uidvalidity < 1:
+            raise ImapConnectionError("mailbox did not provide a valid UIDVALIDITY")
 
     def _require_connection(self) -> ImapConnection:
         if self._connection is None:
@@ -258,12 +277,40 @@ def _open_connection(settings: Settings, context: ssl.SSLContext) -> ImapConnect
     return connection
 
 
-def _mailbox_name(response: bytes) -> str:
-    """Extract the mailbox token from an IMAP LIST response without executing it."""
-    decoded = response.decode("utf-8", errors="replace").rstrip()
-    if '"' in decoded:
-        return decoded.rsplit('"', maxsplit=2)[-2]
-    return decoded.rsplit(" ", maxsplit=1)[-1]
+def _encode_mailbox(value: str) -> str:
+    """IMAP4rev1 mailbox names use modified UTF-7, independently of search charset."""
+
+    def encoded(match: re.Match[str]) -> str:
+        payload = base64.b64encode(match[0].encode("utf-16-be")).decode().rstrip("=")
+        return "&" + payload.replace("/", ",") + "-"
+
+    return re.sub(r"[^\x20-\x7e]+", encoded, value.replace("&", "&-"))
+
+
+def _mailbox_name(response: bytes | tuple[bytes, bytes]) -> str:
+    """Decode quoted, escaped or literal LIST names without interpreting commands."""
+    try:
+        encoded = (
+            response[1].decode("ascii")
+            if isinstance(response, tuple)
+            else shlex.split(response.decode("ascii"))[-1]
+        )
+
+        def decoded(match: re.Match[str]) -> str:
+            payload = match[1].replace(",", "/")
+            return (
+                (
+                    base64.b64decode(payload + "=" * (-len(payload) % 4), validate=True).decode(
+                        "utf-16-be"
+                    )
+                )
+                if payload
+                else "&"
+            )
+
+        return re.sub(r"&([A-Za-z0-9+,]*)-", decoded, encoded)
+    except (ValueError, UnicodeError, IndexError):
+        raise ImapConnectionError("mail provider returned an invalid mailbox name") from None
 
 
 def _search_criteria(

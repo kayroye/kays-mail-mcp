@@ -41,19 +41,19 @@ def make_get_attachment(
             raise ValueError("uid and index must be non-negative valid identifiers")
         with client_factory(settings) as client:
             raw_message = client.fetch_rfc822(mailbox, uid, uidvalidity)
-        attachment, content = attachment_content(
-            raw_message,
-            attachment_index=index,
-            max_attachment_bytes=settings.limits.max_attachment_bytes,
-        )
-        return {
-            "mailbox": mailbox,
-            "uid": uid,
-            "uidvalidity": uidvalidity,
-            "index": index,
-            "filename": attachment.filename,
-            "content_type": attachment.content_type,
-            "content_base64": base64.b64encode(content).decode("ascii"),
-        }
+            attachment, content = attachment_content(
+                raw_message,
+                attachment_index=index,
+                max_attachment_bytes=settings.limits.max_attachment_bytes,
+            )
+            return {
+                "mailbox": mailbox,
+                "uid": uid,
+                "uidvalidity": uidvalidity,
+                "index": index,
+                "filename": attachment.filename,
+                "content_type": attachment.content_type,
+                "content_base64": base64.b64encode(content).decode("ascii"),
+            }
 
     return get_attachment

@@ -5,9 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from email import policy
 from email.header import decode_header, make_header
-from email.message import Message
+from email.message import EmailMessage, Message
 from email.parser import BytesParser
 from html.parser import HTMLParser
+from typing import Any
 
 from .limits import LimitExceededError, enforce_byte_limit
 
@@ -60,9 +61,33 @@ class MimeParseError(ValueError):
     """The RFC822 payload could not be safely parsed within configured limits."""
 
 
+def _bounded_parse(raw: bytes) -> Message:
+    # Reject line and object-count amplification before building an email object tree.
+    if raw.count(b"\n") > 250_000:
+        raise MimeParseError("message exceeds physical line limit")
+    start = 0
+    while start < len(raw):
+        end = raw.find(b"\n", start)
+        if end == -1:
+            end = len(raw)
+        if end - start > 1_048_576:
+            raise MimeParseError("message exceeds physical line limit")
+        start = end + 1
+    parts = 0
+
+    def factory(*args: Any, **kwargs: Any) -> EmailMessage:
+        nonlocal parts
+        parts += 1
+        if parts > 256:
+            raise MimeParseError("message exceeds MIME part limit")
+        return EmailMessage(*args, **kwargs)
+
+    return BytesParser(_class=factory, policy=policy.default).parsebytes(raw)
+
+
 def parse_message(raw_message: bytes, *, max_body_bytes: int) -> ParsedMessage:
     """Parse a message without returning active HTML or attachment contents."""
-    message = BytesParser(policy=policy.default).parsebytes(raw_message)
+    message = _bounded_parse(raw_message)
     body = _body_text(message, max_body_bytes)
     attachments = _attachments(message)
     return ParsedMessage(
@@ -78,7 +103,7 @@ def parse_message(raw_message: bytes, *, max_body_bytes: int) -> ParsedMessage:
 
 def parse_headers(raw_message: bytes) -> ParsedHeaders:
     """Parse normalized headers without reading or returning the message body."""
-    message = BytesParser(policy=policy.default).parsebytes(raw_message)
+    message = _bounded_parse(raw_message)
     return ParsedHeaders(
         subject=_decode_header(message.get("Subject")),
         sender=_decode_header(message.get("From")),
@@ -94,7 +119,7 @@ def attachment_content(
     """Return one allowed attachment only after applying the server size limit."""
     if attachment_index < 0:
         raise MimeParseError("attachment was not found")
-    message = BytesParser(policy=policy.default).parsebytes(raw_message)
+    message = _bounded_parse(raw_message)
     attachments = list(_attachment_parts(message))
     if attachment_index >= len(attachments):
         raise MimeParseError("attachment was not found")

@@ -98,9 +98,9 @@ def make_search_messages(
                 before_uid=before_uid,
                 maximum=maximum,
             )
-        messages = [_summary(header) for header in headers]
-        next_before_uid = headers[-1].uid if len(headers) == maximum else None
-        return {"messages": messages, "next_before_uid": next_before_uid}
+            messages = [_summary(header) for header in headers]
+            next_before_uid = headers[-1].uid if len(headers) == maximum else None
+            return {"messages": messages, "next_before_uid": next_before_uid}
 
     return search_messages
 

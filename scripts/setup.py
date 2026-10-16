@@ -72,6 +72,8 @@ def read_release_images(source: Path) -> dict[str, str]:
 
 def prepare(config: Path, answers: dict[str, str], imap_password: str, login_password: str) -> None:
     """Write a new configuration once. Existing complete installs are never overwritten."""
+    if os.getuid() == 0:
+        raise ValueError("Run setup as a non-root user with Docker access")
     if config.is_symlink():
         raise ValueError("Configuration directory must not be a symlink")
     config = config.absolute()
@@ -242,6 +244,10 @@ def prepare(config: Path, answers: dict[str, str], imap_password: str, login_pas
 def validate_existing(config: Path) -> None:
     for path in [
         config,
+        config / "secrets",
+        config / "bootstrap",
+        config / "auth-state",
+        config / "keycloak-data",
         config / "settings.json",
         config / "compose.env",
         config / "mail.env",

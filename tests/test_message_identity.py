@@ -53,7 +53,7 @@ def test_body_download_is_a_bounded_peek_even_when_size_claim_is_small() -> None
     with ImapClient(config, connection_factory=lambda *_: conn) as client:
         assert client.fetch_rfc822("INBOX", 42, 101) == b"abc"
     assert conn.uid_calls[-1] == ("FETCH", ("42", "(BODY.PEEK[]<0.11>)"))
-    assert conn.selected == [("INBOX", True)]
+    assert conn.selected == [('"INBOX"', True)]
 
 
 def test_unicode_search_is_a_literal_and_identity_includes_uidvalidity() -> None:
@@ -109,3 +109,70 @@ def test_operation_limit_and_release_on_login_failure() -> None:
         with pytest.raises(ImapAuthenticationError):
             with ImapClient(config, connection_factory=failed):
                 pytest.fail("failed login was accepted")
+
+
+def test_search_headers_have_a_separate_partial_fetch_and_size_boundary() -> None:
+    class HeaderBomb(WireFixture):
+        def uid(self, command: str, *args: Any) -> tuple[str, list[Any]]:
+            self.uid_calls.append((command, args))
+            if command == "SEARCH":
+                return "OK", [b"42"]
+            return "OK", [(b"1 (UID 42 BODY[HEADER] {65537}", b"x" * 65537)]
+
+    conn = HeaderBomb()
+    with ImapClient(settings(), connection_factory=lambda *_: conn) as client:
+        with pytest.raises(ValueError, match="header.*limit"):
+            client.search_headers(
+                "INBOX",
+                query=None,
+                sender=None,
+                subject=None,
+                after_date=None,
+                before_date=None,
+                unread_only=False,
+                before_uid=None,
+                maximum=25,
+            )
+    assert conn.uid_calls[-1][1][-1] == (
+        "(BODY.PEEK[HEADER.FIELDS (FROM TO CC SUBJECT DATE MESSAGE-ID)]<0.65537> FLAGS)"
+    )
+    assert conn.maximum == 65537
+
+
+def test_mailbox_with_spaces_is_one_quoted_imap_argument() -> None:
+    conn = WireFixture()
+    config = replace(settings(), allowed_mailboxes=("Sent Messages",))
+    with ImapClient(config, connection_factory=lambda *_: conn) as client:
+        assert client.fetch_rfc822("Sent Messages", 42, 101) == b"abc"
+    assert conn.selected == [('"Sent Messages"', True)]
+
+
+def test_unicode_mailbox_names_use_modified_utf7_and_list_roundtrips() -> None:
+    from imap_mcp.imap_client import _encode_mailbox, _mailbox_name
+
+    assert _encode_mailbox("台北 & Archive") == "&U,BTFw- &- Archive"
+    assert _mailbox_name(b'(\\HasNoChildren) "/" "&U,BTFw- &- Archive"') == "台北 & Archive"
+
+
+def test_search_retained_headers_have_an_aggregate_budget() -> None:
+    class HeaderPage(WireFixture):
+        def uid(self, command: str, *args: Any) -> tuple[str, list[Any]]:
+            self.uid_calls.append((command, args))
+            if command == "SEARCH":
+                return "OK", [b" ".join(str(i).encode() for i in range(1, 101))]
+            return "OK", [(b"1 (UID 1 BODY[HEADER] {65536}", b"x" * 65536)]
+
+    conn = HeaderPage()
+    with ImapClient(settings(), connection_factory=lambda *_: conn) as client:
+        with pytest.raises(ValueError, match="aggregate size limit"):
+            client.search_headers(
+                "INBOX",
+                query=None,
+                sender=None,
+                subject=None,
+                after_date=None,
+                before_date=None,
+                unread_only=False,
+                before_uid=None,
+                maximum=100,
+            )
