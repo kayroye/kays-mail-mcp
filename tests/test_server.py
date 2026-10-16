@@ -23,7 +23,9 @@ def test_health_check_returns_only_safe_service_status() -> None:
 
 
 def test_server_discovers_only_health_check_at_this_stage() -> None:
-    server = create_server(settings())
+    from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
+
+    server = create_server(settings(), auth=StaticTokenVerifier(tokens={}))
     tools = asyncio.run(server.list_tools())
 
     assert [tool.name for tool in tools] == [
@@ -35,5 +37,5 @@ def test_server_discovers_only_health_check_at_this_stage() -> None:
     ]
     for tool in tools:
         assert tool.annotations is not None
-        assert tool.annotations.readOnlyHint is True
-        assert tool.annotations.destructiveHint is False
+        assert tool.annotations.read_only_hint is True
+        assert tool.annotations.destructive_hint is False

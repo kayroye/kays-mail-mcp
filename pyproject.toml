@@ -3,14 +3,14 @@ requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "imap-mcp"
+name = "kays-mail-mcp"
 version = "0.1.0"
 description = "A strictly read-only IMAP MCP server."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
-    "mcp==1.28.1",
+    "fastmcp-slim[server]==4.1.0",
 ]
 
 [project.scripts]
@@ -19,8 +19,10 @@ imap-mcp = "imap_mcp.__main__:main"
 [project.optional-dependencies]
 dev = [
     "mypy==1.18.2",
-    "pytest==8.4.2",
+    "pytest==9.0.3",
     "ruff==0.12.11",
+    "pyjwt[crypto]==2.13.0",
+    "httpx==0.28.1",
 ]
 
 [tool.hatch.build.targets.wheel]

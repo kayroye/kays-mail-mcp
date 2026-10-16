@@ -1,14 +1,24 @@
-"""Command-line entry point for the Streamable HTTP MCP server."""
+"""Serve the authenticated MCP endpoint; incomplete auth configuration fails closed."""
 
-from __future__ import annotations
-
-from .config import load_settings
+from .auth import create_auth, load_auth_settings
+from .config import SettingsError, load_settings
 from .server import create_server
 
 
 def main() -> None:
-    """Load validated settings and serve the MCP endpoint."""
-    create_server(load_settings()).run(transport="streamable-http")
+    try:
+        settings = load_settings()
+        auth = create_auth(load_auth_settings())
+    except SettingsError as exc:
+        raise SystemExit(str(exc)) from None
+    create_server(settings, auth=auth).run(
+        transport="http",
+        host=settings.http.host,
+        port=settings.http.port,
+        stateless_http=True,
+        json_response=True,
+        show_banner=False,
+    )
 
 
 if __name__ == "__main__":
