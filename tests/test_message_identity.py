@@ -117,6 +117,7 @@ def test_operation_limit_and_release_on_login_failure() -> None:
                     pytest.fail("third operation acquired a slot")
 
     def failed(*_: object) -> WireFixture:
+        """raise a synthetic authentication failure for each connection attempt"""
         raise imaplib.IMAP4.error("synthetic login error")
 
     for _ in range(3):
