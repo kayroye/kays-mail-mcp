@@ -1,3 +1,7 @@
+"""verify release archives include project assets but exclude private workspace data
+check both source-built and prebuilt-image package variants
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -15,6 +19,7 @@ def test_release_archive_contains_setup_and_attribution_but_no_private_state(
     tmp_path: Path,
     prebuilt: bool,
 ) -> None:
+    """check archive contents, optional manifest inclusion, and checksum output"""
     manifest = tmp_path / "release-images.json"
     manifest.write_text(
         json.dumps(

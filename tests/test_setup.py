@@ -1,3 +1,7 @@
+"""verify interactive setup creates and preserves private deployment state
+cover input validation, filesystem protections, and pinned image handling
+"""
+
 from __future__ import annotations
 
 import importlib.util
@@ -18,6 +22,7 @@ SPEC.loader.exec_module(setup)
 
 
 def answers() -> dict[str, str]:
+    """return one valid baseline of interactive setup answers"""
     return {
         "mcp_url": "https://mail.example.test",
         "login_url": "https://login.example.test",
@@ -32,6 +37,7 @@ def answers() -> dict[str, str]:
 def test_setup_rerun_preserves_credentials_and_builds_valid_private_configuration(
     tmp_path: Path,
 ) -> None:
+    """check first setup creates private files and reruns preserve generated credentials"""
     config = tmp_path / "private"
     setup.prepare(config, answers(), "mail-secret", "owner-login-secret")
     before = (config / "secrets/signing_key").read_bytes()
@@ -65,6 +71,7 @@ def test_setup_rerun_preserves_credentials_and_builds_valid_private_configuratio
     ],
 )
 def test_invalid_input_does_not_write_configuration(tmp_path: Path, field: str, value: str) -> None:
+    """check rejected answers leave no completion marker behind"""
     data = answers()
     data[field] = value
     with pytest.raises(ValueError):
@@ -73,6 +80,7 @@ def test_invalid_input_does_not_write_configuration(tmp_path: Path, field: str, 
 
 
 def test_setup_refuses_symlink_destination(tmp_path: Path) -> None:
+    """check setup does not follow a linked configuration directory"""
     target = tmp_path / "target"
     target.mkdir()
     link = tmp_path / "link"
@@ -83,6 +91,7 @@ def test_setup_refuses_symlink_destination(tmp_path: Path) -> None:
 
 
 def test_check_has_no_side_effect_and_missing_prerequisite_is_actionable(tmp_path: Path) -> None:
+    """check prerequisite reporting is useful and does not create the config path"""
     import subprocess
 
     result = subprocess.run(
@@ -103,6 +112,7 @@ def test_check_has_no_side_effect_and_missing_prerequisite_is_actionable(tmp_pat
 
 
 def test_release_requires_digest_pinned_images(tmp_path: Path) -> None:
+    """check release images reject mutable tags and accept pinned digests"""
     manifest = tmp_path / "release-images.json"
     manifest.write_text(
         json.dumps(
@@ -126,12 +136,14 @@ def test_root_setup_is_rejected_instead_of_running_application_containers_as_roo
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """check root setup is rejected before any private files are created"""
     monkeypatch.setattr(setup.os, "getuid", lambda: 0)
     with pytest.raises(ValueError, match="non-root"):
         setup.prepare(tmp_path / "private", answers(), "secret", "owner-login-secret")
 
 
 def test_existing_configuration_rejects_symlinked_secret_directory(tmp_path: Path) -> None:
+    """check reruns detect a secrets directory replaced by a symlink"""
     config = tmp_path / "private"
     setup.prepare(config, answers(), "secret", "owner-login-secret")
     (config / "secrets").rename(tmp_path / "elsewhere")
