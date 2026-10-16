@@ -1,0 +1,133 @@
+name: kays-mail-mcp-${INSTANCE_ID:?run setup first}
+x-restricted: &restricted
+  restart: unless-stopped
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  read_only: true
+  pids_limit: 128
+  logging:
+    driver: json-file
+    options: {max-size: 5m, max-file: '3'}
+services:
+  db:
+    <<: *restricted
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    cap_add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE, FOWNER]
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password]
+    volumes: [db:/var/lib/postgresql/data]
+    tmpfs: [/tmp, /var/run/postgresql]
+    networks: [identity]
+    mem_limit: 256m
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U keycloak -d keycloak']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+  keycloak:
+    <<: *restricted
+    image: ${KEYCLOAK_IMAGE:-kays-mail-mcp-keycloak:local}
+    build:
+      context: ${SOURCE_DIR:?}
+      dockerfile: deploy/Keycloak.Dockerfile
+    user: ${PUID:?}:${PGID:?}
+    entrypoint: [/bin/bash, /bootstrap-entrypoint.sh]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_HOSTNAME: ${LOGIN_PUBLIC_URL:?}
+      KC_HTTP_ENABLED: 'true'
+      KC_PROXY_HEADERS: xforwarded
+      KC_BOOTSTRAP_ADMIN_USERNAME: bootstrap-admin
+      JAVA_OPTS_KC_HEAP: -Xms128m -Xmx512m
+    secrets: [db_password, admin_password]
+    volumes:
+      - ${CONFIG_DIR:?}/bootstrap:/opt/keycloak/data/import:ro
+      - ${CONFIG_DIR:?}/keycloak-data:/opt/keycloak/data
+      - ${SOURCE_DIR:?}/deploy/keycloak-entrypoint.sh:/bootstrap-entrypoint.sh:ro
+    tmpfs: [/tmp]
+    ports: ['127.0.0.1:${ADMIN_PORT:-8870}:8080']
+    networks: [identity, ingress]
+    mem_limit: 768m
+    depends_on:
+      db: {condition: service_healthy}
+    healthcheck:
+      test: [CMD-SHELL, "bash -c 'exec 3<>/dev/tcp/127.0.0.1/9000; printf \"GET /health/ready HTTP/1.0\\r\\n\\r\\n\" >&3; head -1 <&3 | grep -q 200'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+  mail:
+    <<: *restricted
+    image: ${MAIL_IMAGE:-kays-mail-mcp:local}
+    build: {context: '${SOURCE_DIR:?}'}
+    user: ${PUID:?}:${PGID:?}
+    env_file: [mail.env]
+    environment:
+      HOME: /state
+      XDG_DATA_HOME: /state/data
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: '8700'
+      IMAP_PASSWORD_FILE: /run/secrets/imap_password
+      OIDC_CLIENT_SECRET_FILE: /run/secrets/oidc_client_secret
+      MCP_SIGNING_KEY_FILE: /run/secrets/signing_key
+      OIDC_DISCOVERY_URL: http://keycloak:8080/realms/mail/.well-known/openid-configuration
+      FASTMCP_LOG_LEVEL: ERROR
+    secrets: [imap_password, oidc_client_secret, signing_key]
+    volumes: ['${CONFIG_DIR:?}/auth-state:/state']
+    tmpfs: [/tmp]
+    networks: [identity, ingress, egress]
+    mem_limit: 384m
+    cpus: 1.0
+    depends_on:
+      keycloak: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, "import socket; socket.create_connection(('127.0.0.1',8700),3).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  gateway:
+    <<: *restricted
+    image: nginx:stable-alpine@sha256:970364228b1e4f932abc22d321932816782cca8a20b85a77552a7cfe9acfb3b5
+    user: ${PUID:?}:${PGID:?}
+    entrypoint: [nginx]
+    command: [-c, /etc/nginx/nginx.conf, -g, 'daemon off;']
+    volumes: ['${CONFIG_DIR:?}/nginx.conf:/etc/nginx/nginx.conf:ro']
+    tmpfs: [/tmp]
+    networks: [ingress]
+    mem_limit: 64m
+    depends_on:
+      mail: {condition: service_healthy}
+    healthcheck:
+      test: [CMD-SHELL, 'wget -q -O /dev/null http://127.0.0.1:8080/healthz']
+      interval: 10s
+      timeout: 3s
+      retries: 10
+  tunnel:
+    <<: *restricted
+    profiles: [public]
+    image: cloudflare/cloudflared:latest@sha256:a15a3b50b8dabd57ac2090e9484c0247dba9dfa1f0df4d298d4317f9d69eb2d5
+    user: ${PUID:?}:${PGID:?}
+    command: [tunnel, --no-autoupdate, run, --token-file, /run/secrets/tunnel_token]
+    secrets: [tunnel_token]
+    networks: [ingress, egress]
+    mem_limit: 128m
+    depends_on:
+      gateway: {condition: service_healthy}
+networks:
+  identity: {internal: true}
+  ingress: {internal: true}
+  egress: {}
+volumes:
+  db: {}
+secrets:
+  imap_password: {file: '${CONFIG_DIR:?}/secrets/imap_password'}
+  oidc_client_secret: {file: '${CONFIG_DIR:?}/secrets/oidc_client_secret'}
+  signing_key: {file: '${CONFIG_DIR:?}/secrets/signing_key'}
+  db_password: {file: '${CONFIG_DIR:?}/secrets/db_password'}
+  admin_password: {file: '${CONFIG_DIR:?}/secrets/admin_password'}
+  tunnel_token: {file: '${CONFIG_DIR:?}/secrets/tunnel_token'}

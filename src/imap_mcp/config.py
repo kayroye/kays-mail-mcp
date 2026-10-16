@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
@@ -47,7 +47,7 @@ class Settings:
     host: str
     port: int
     username: str
-    password: str
+    password: str = field(repr=False)
     tls_mode: TlsMode
     allowed_mailboxes: tuple[str, ...]
     limits: SafetyLimits

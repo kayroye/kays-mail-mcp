@@ -1,0 +1,55 @@
+pid /tmp/nginx.pid;
+error_log /dev/null crit;
+worker_processes 1;
+events { worker_connections 128; }
+http {
+  access_log off;
+  client_body_temp_path /tmp/client;
+  proxy_temp_path /tmp/proxy;
+  fastcgi_temp_path /tmp/fastcgi;
+  uwsgi_temp_path /tmp/uwsgi;
+  scgi_temp_path /tmp/scgi;
+  client_max_body_size 64k;
+  client_body_timeout 15s;
+  client_header_timeout 15s;
+  limit_req_zone $server_name zone=oauth:1m rate=10r/m;
+  limit_req_zone $server_name zone=login:1m rate=30r/m;
+  limit_req_zone $server_name zone=mail:1m rate=120r/m;
+  limit_req_status 429;
+  server {
+    listen 8080 default_server;
+    server_name _;
+    location = /healthz { return 200 'ok'; }
+    location / { return 404; }
+  }
+  server {
+    listen 8080;
+    server_name @MCP_HOST@;
+    proxy_set_header Host @MCP_HOST@;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_buffering off;
+    proxy_read_timeout 90s;
+    location ~ ^/(mcp/?|authorize|token|register|revoke|consent|auth/callback|\.well-known/.*)$ {
+      limit_req zone=oauth burst=10 nodelay;
+      proxy_pass http://mail:8700;
+    }
+    location = /mcp {
+      limit_req zone=mail burst=20 nodelay;
+      proxy_pass http://mail:8700;
+    }
+    location / { return 404; }
+  }
+  server {
+    listen 8080;
+    server_name @LOGIN_HOST@;
+    proxy_set_header Host @LOGIN_HOST@;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Host @LOGIN_HOST@;
+    location /realms/mail/ {
+      limit_req zone=login burst=15 nodelay;
+      proxy_pass http://keycloak:8080;
+    }
+    location /resources/ { proxy_pass http://keycloak:8080; }
+    location / { return 404; }
+  }
+}

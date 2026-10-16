@@ -18,6 +18,7 @@ def main() -> None:
         stateless_http=True,
         json_response=True,
         show_banner=False,
+        uvicorn_config={"access_log": False, "proxy_headers": False},
     )
 
 

@@ -223,3 +223,7 @@ data/todo.txt
 
 # local agent file
 AGENTS.md
+
+# Generated local releases and integration state
+release/
+release-images.json
