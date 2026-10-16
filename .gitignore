@@ -224,6 +224,9 @@ data/todo.txt
 # local agent file
 AGENTS.md
 
+# keep internal implementation plans out of the public repository
+docs/superpowers/plans/
+
 # Generated local releases and integration state
 release/
 release-images.json
