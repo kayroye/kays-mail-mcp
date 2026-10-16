@@ -6,9 +6,10 @@ Search mail, read messages and retrieve attachments through a standard HTTP MCP
 endpoint. Works with IMAP providers, including iCloud Mail and custom domains
 hosted by iCloud. Thunderbird is not required.
 
-**Status: pre-release development.** The installer and authenticated deployment
-are being verified. No independent security audit has been performed. Do not
-expose an IMAP MCP process directly to the Internet.
+**Status: early pre-release.** Synthetic tests cover mail handling, setup and a
+real Keycloak/OAuth container flow. Real-mailbox and hosted-client connections
+still need verification for each installation. No independent security audit has
+been performed.
 
 ## Quick start
 
@@ -100,6 +101,7 @@ python3.12 -m venv .venv
 .venv/bin/ruff check .
 .venv/bin/mypy
 .venv/bin/pytest
+.venv/bin/python tests/integration/smoke.py  # disposable Docker identity/TLS test
 ```
 
 Tests use synthetic mail and identity fixtures. The real IMAP test is opt-in and

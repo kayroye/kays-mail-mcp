@@ -98,5 +98,7 @@ availability and callback URLs. No OpenAI or Anthropic API key is required.
 
 Verify release SHA-256 checksums before extracting. Keep each extracted version's
 source directory: Compose uses it for the identity entrypoint and source-build
-fallback. Releases with `release-images.json` use digest-pinned prebuilt images.
+fallback. Releases with `release-images.json` use digest-pinned prebuilt images whose public
+download was checked during release. Without that manifest, setup builds locally
+from the included source.
 See [operations](operations.md) before upgrading or deleting files.
