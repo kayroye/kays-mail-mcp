@@ -1,4 +1,6 @@
-"""Bounded, read-only message search MCP tool."""
+"""validate search filters and shape bounded message metadata pages
+use ImapClient for server search and mime_parser for normalized header values
+"""
 
 from __future__ import annotations
 
@@ -12,7 +14,7 @@ from ..mime_parser import parse_headers
 
 
 class SearchMessage(TypedDict):
-    """Compact message metadata keyed by the stable mailbox plus UID identity."""
+    """describe one compact result keyed by mailbox and UID"""
 
     uid: int
     uidvalidity: int
@@ -24,18 +26,22 @@ class SearchMessage(TypedDict):
 
 
 class SearchMessagesResult(TypedDict):
-    """Bounded page of metadata and a cursor for older results."""
+    """describe one bounded result page and its optional older-results cursor"""
 
     messages: list[SearchMessage]
     next_before_uid: int | None
 
 
 class SearchSession(Protocol):
-    """Read-only IMAP behavior needed to implement bounded search."""
+    """describe the session behavior needed for a bounded header search"""
 
-    def __enter__(self) -> SearchSession: ...
+    def __enter__(self) -> SearchSession:
+        """open the search session"""
+        ...
 
-    def __exit__(self, *_: object) -> None: ...
+    def __exit__(self, *_: object) -> None:
+        """close the search session after collecting its page"""
+        ...
 
     def search_headers(
         self,
@@ -49,7 +55,9 @@ class SearchSession(Protocol):
         unread_only: bool,
         before_uid: int | None,
         maximum: int,
-    ) -> tuple[MessageHeader, ...]: ...
+    ) -> tuple[MessageHeader, ...]:
+        """search the selected mailbox and return bounded raw headers"""
+        ...
 
 
 SearchClientFactory = Callable[[Settings], SearchSession]
@@ -58,7 +66,7 @@ SearchClientFactory = Callable[[Settings], SearchSession]
 def make_search_messages(
     settings: Settings, client_factory: SearchClientFactory = ImapClient
 ) -> Callable[..., SearchMessagesResult]:
-    """Create a search tool whose caller input cannot override configured limits."""
+    """create a search tool whose caller input cannot raise configured limits"""
 
     def search_messages(
         mailbox: str,
@@ -71,12 +79,13 @@ def make_search_messages(
         limit: int = 25,
         before_uid: int | None = None,
     ) -> SearchMessagesResult:
-        """Search one allowed mailbox and return compact metadata only, newest first."""
+        """search one allowed mailbox and return compact metadata newest first"""
         clean_query = _bounded_text(query, settings.limits.max_query_length, "query")
         clean_sender = _bounded_text(sender, settings.limits.max_query_length, "sender")
         clean_subject = _bounded_text(subject, settings.limits.max_query_length, "subject")
         if before_uid is not None and before_uid < 2:
             raise ValueError("before_uid must be at least 2")
+        # parse dates before opening a session so invalid ranges never reach IMAP
         parsed_after_date = _parse_date(after_date, "after_date")
         parsed_before_date = _parse_date(before_date, "before_date")
         if (
@@ -85,6 +94,7 @@ def make_search_messages(
             and parsed_after_date >= parsed_before_date
         ):
             raise ValueError("after_date must be earlier than before_date")
+        # clamp caller paging to the server cap before asking ImapClient for results
         maximum = min(max(limit, 1), settings.limits.max_results)
         with client_factory(settings) as client:
             headers = client.search_headers(
@@ -99,6 +109,7 @@ def make_search_messages(
                 maximum=maximum,
             )
             messages = [_summary(header) for header in headers]
+            # a full page may have older results, so its last UID becomes the next cursor
             next_before_uid = headers[-1].uid if len(headers) == maximum else None
             return {"messages": messages, "next_before_uid": next_before_uid}
 
@@ -106,6 +117,7 @@ def make_search_messages(
 
 
 def _bounded_text(value: str | None, maximum: int, name: str) -> str | None:
+    """trim optional search text and enforce the configured query length"""
     if value is None:
         return None
     value = value.strip()
@@ -117,6 +129,7 @@ def _bounded_text(value: str | None, maximum: int, name: str) -> str | None:
 
 
 def _parse_date(value: str | None, name: str) -> date | None:
+    """parse an ISO date or return no filter when the caller omitted it"""
     if value is None:
         return None
     try:
@@ -126,6 +139,7 @@ def _parse_date(value: str | None, name: str) -> date | None:
 
 
 def _summary(header: MessageHeader) -> SearchMessage:
+    """normalize one fetched header through mime_parser and retain its UID metadata"""
     parsed = parse_headers(header.raw_headers)
     return {
         "uid": header.uid,

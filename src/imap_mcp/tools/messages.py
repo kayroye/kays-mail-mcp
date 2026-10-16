@@ -1,4 +1,6 @@
-"""Read-only retrieval of one complete, safely normalized message."""
+"""retrieve one message and convert it to a stable safe response
+coordinate ImapClient fetching with the bounded parsing in mime_parser
+"""
 
 from __future__ import annotations
 
@@ -11,7 +13,7 @@ from ..mime_parser import parse_message
 
 
 class MessageAttachment(TypedDict):
-    """Attachment metadata used to select a later explicit attachment request."""
+    """describe an attachment that can be requested separately by index"""
 
     index: int
     filename: str
@@ -20,7 +22,7 @@ class MessageAttachment(TypedDict):
 
 
 class GetMessageResult(TypedDict):
-    """One stable mailbox-plus-UID message identity and safe normalized content."""
+    """describe the normalized message response and its stable mailbox identity"""
 
     mailbox: str
     uid: int
@@ -35,13 +37,19 @@ class GetMessageResult(TypedDict):
 
 
 class MessageSession(Protocol):
-    """Read-only IMAP behavior required by the complete-message tool."""
+    """describe the session behavior needed to fetch one full message"""
 
-    def __enter__(self) -> MessageSession: ...
+    def __enter__(self) -> MessageSession:
+        """open a session for one message retrieval"""
+        ...
 
-    def __exit__(self, *_: object) -> None: ...
+    def __exit__(self, *_: object) -> None:
+        """close the IMAP session after retrieval"""
+        ...
 
-    def fetch_rfc822(self, mailbox: str, uid: int, uidvalidity: int) -> bytes: ...
+    def fetch_rfc822(self, mailbox: str, uid: int, uidvalidity: int) -> bytes:
+        """fetch one message only when its mailbox version still matches"""
+        ...
 
 
 MessageClientFactory = Callable[[Settings], MessageSession]
@@ -50,14 +58,15 @@ MessageClientFactory = Callable[[Settings], MessageSession]
 def make_get_message(
     settings: Settings, client_factory: MessageClientFactory = ImapClient
 ) -> Callable[[str, int, int], GetMessageResult]:
-    """Create a complete-message tool with a non-client-overridable body limit."""
+    """create a complete-message tool with a server-controlled body limit"""
 
     def get_message(mailbox: str, uid: int, uidvalidity: int) -> GetMessageResult:
-        """Retrieve one mailbox-plus-UID message as safe plain text and metadata."""
+        """retrieve one mailbox-plus-UID message as safe text and metadata"""
         if uid < 1:
             raise ValueError("uid must be a positive IMAP UID")
         with client_factory(settings) as client:
             raw_message = client.fetch_rfc822(mailbox, uid, uidvalidity)
+            # hand raw bytes to mime_parser so headers, body, and attachment metadata share one policy
             parsed = parse_message(raw_message, max_body_bytes=settings.limits.max_body_bytes)
             return {
                 "mailbox": mailbox,
