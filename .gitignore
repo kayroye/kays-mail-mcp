@@ -227,3 +227,6 @@ AGENTS.md
 # Generated local releases and integration state
 release/
 release-images.json
+
+# Local Cloudflare CLI account cache
+.cloudflare/

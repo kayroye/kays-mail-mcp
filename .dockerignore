@@ -13,3 +13,6 @@ __pycache__/
 build/
 dist/
 data/
+
+# Local Cloudflare CLI account cache
+.cloudflare/
