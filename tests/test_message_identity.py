@@ -1,3 +1,7 @@
+"""verify IMAP wire boundaries and mailbox version identity across fetch flows
+exercise stale cursors, literal limits, Unicode searches, and aggregate header caps
+"""
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -10,15 +14,19 @@ from imap_mcp.imap_client import ImapClient
 
 
 class WireFixture(FakeConnection):
+    """record selected mailbox versions and bounded search or fetch responses"""
+
     literal: bytes | None = None
     validity: bytes = b"101"
     declared_size = 3
 
     def response(self, code: str) -> tuple[str, list[bytes]]:
+        """return the fixture UIDVALIDITY and verify the requested response code"""
         assert code == "UIDVALIDITY"
         return code, [self.validity]
 
     def uid(self, command: str, *args: Any) -> tuple[str, list[Any]]:
+        """record the command and respond to search, size, or bounded body fetch"""
         self.uid_calls.append((command, args))
         if command == "SEARCH":
             return "OK", [b"42"]
@@ -28,6 +36,7 @@ class WireFixture(FakeConnection):
 
 
 def test_stale_uidvalidity_rejected_before_message_fetch() -> None:
+    """check a changed mailbox version prevents reuse of an old search result"""
     conn = WireFixture()
     with ImapClient(settings(), connection_factory=lambda *_: conn) as client:
         with pytest.raises(ValueError, match="mailbox changed"):
@@ -36,6 +45,7 @@ def test_stale_uidvalidity_rejected_before_message_fetch() -> None:
 
 
 def test_declared_oversize_never_downloads_body() -> None:
+    """check declared message size is rejected before the body fetch"""
     conn = WireFixture()
     conn.declared_size = 100
     config = settings()
@@ -47,6 +57,7 @@ def test_declared_oversize_never_downloads_body() -> None:
 
 
 def test_body_download_is_a_bounded_peek_even_when_size_claim_is_small() -> None:
+    """check body retrieval remains capped and uses a read-only selection"""
     conn = WireFixture()
     config = settings()
     config = replace(config, limits=replace(config.limits, max_message_bytes=10))
@@ -57,6 +68,7 @@ def test_body_download_is_a_bounded_peek_even_when_size_claim_is_small() -> None
 
 
 def test_unicode_search_is_a_literal_and_identity_includes_uidvalidity() -> None:
+    """check UTF-8 search values use literals and results retain mailbox version"""
     conn = WireFixture()
     with ImapClient(settings(), connection_factory=lambda *_: conn) as client:
         headers = client.search_headers(
@@ -76,6 +88,7 @@ def test_unicode_search_is_a_literal_and_identity_includes_uidvalidity() -> None
 
 
 def test_wire_literal_rejected_before_reading_any_payload() -> None:
+    """check the IMAP reader rejects an oversized literal before consuming bytes"""
     import io
 
     from imap_mcp.imap_client import LimitedIMAP4
@@ -89,6 +102,7 @@ def test_wire_literal_rejected_before_reading_any_payload() -> None:
 
 
 def test_operation_limit_and_release_on_login_failure() -> None:
+    """check concurrent sessions are capped and failed login releases its slot"""
     import imaplib
 
     from imap_mcp.errors import ImapAuthenticationError, ImapConnectionError
@@ -112,8 +126,13 @@ def test_operation_limit_and_release_on_login_failure() -> None:
 
 
 def test_search_headers_have_a_separate_partial_fetch_and_size_boundary() -> None:
+    """check header retrieval uses its own partial fetch size limit"""
+
     class HeaderBomb(WireFixture):
+        """return an oversized header literal after a normal search response"""
+
         def uid(self, command: str, *args: Any) -> tuple[str, list[Any]]:
+            """record the request and return an oversized header body"""
             self.uid_calls.append((command, args))
             if command == "SEARCH":
                 return "OK", [b"42"]
@@ -140,6 +159,7 @@ def test_search_headers_have_a_separate_partial_fetch_and_size_boundary() -> Non
 
 
 def test_mailbox_with_spaces_is_one_quoted_imap_argument() -> None:
+    """check mailbox names with spaces stay one quoted select argument"""
     conn = WireFixture()
     config = replace(settings(), allowed_mailboxes=("Sent Messages",))
     with ImapClient(config, connection_factory=lambda *_: conn) as client:
@@ -148,6 +168,7 @@ def test_mailbox_with_spaces_is_one_quoted_imap_argument() -> None:
 
 
 def test_unicode_mailbox_names_use_modified_utf7_and_list_roundtrips() -> None:
+    """check modified UTF-7 mailbox encoding and decoding round-trip"""
     from imap_mcp.imap_client import _encode_mailbox, _mailbox_name
 
     assert _encode_mailbox("台北 & Archive") == "&U,BTFw- &- Archive"
@@ -155,8 +176,13 @@ def test_unicode_mailbox_names_use_modified_utf7_and_list_roundtrips() -> None:
 
 
 def test_search_retained_headers_have_an_aggregate_budget() -> None:
+    """check many valid-sized headers still obey the aggregate response cap"""
+
     class HeaderPage(WireFixture):
+        """return many search UIDs and one maximum-sized header per fetch"""
+
         def uid(self, command: str, *args: Any) -> tuple[str, list[Any]]:
+            """record search and header requests with fixture responses"""
             self.uid_calls.append((command, args))
             if command == "SEARCH":
                 return "OK", [b" ".join(str(i).encode() for i in range(1, 101))]

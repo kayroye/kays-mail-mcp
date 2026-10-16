@@ -1,3 +1,7 @@
+"""verify rendered Compose services keep identity and database access private
+use generated setup files to inspect the effective configuration without starting containers
+"""
+
 from __future__ import annotations
 
 import json
@@ -6,6 +10,7 @@ from pathlib import Path
 
 
 def test_effective_compose_configuration_keeps_origin_and_database_private(tmp_path: Path) -> None:
+    """check ports, networks, container restrictions, image pins, and tunnel ingress"""
     from test_setup import answers, setup
 
     config = tmp_path / "private"

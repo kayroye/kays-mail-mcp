@@ -1,3 +1,7 @@
+"""verify owner-only authorization, OIDC validation, and callback policy
+use generated signing keys and a local discovery endpoint instead of external identity services
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -17,11 +21,13 @@ from imap_mcp.server import create_server
 
 
 def test_auth_configuration_fails_closed_without_secrets() -> None:
+    """check missing OIDC settings stop startup"""
     with pytest.raises(SettingsError):
         load_auth_settings({})
 
 
 def test_auth_configuration_rejects_http_and_short_signing_key(tmp_path: Path) -> None:
+    """check public URLs require HTTPS and signing keys meet the minimum length"""
     secret = tmp_path / "secret"
     secret.write_text("x" * 40)
     secret.chmod(0o600)
@@ -43,6 +49,7 @@ def test_auth_configuration_rejects_http_and_short_signing_key(tmp_path: Path) -
 
 
 def make_verifier() -> tuple[OwnerJWTVerifier, rsa.RSAPrivateKey]:
+    """build an owner verifier and its matching test signing key"""
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     public = key.public_key().public_bytes(
         serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
@@ -57,6 +64,7 @@ def make_verifier() -> tuple[OwnerJWTVerifier, rsa.RSAPrivateKey]:
 
 
 def token(key: rsa.RSAPrivateKey, **changes: object) -> str:
+    """sign a valid owner token with optional claim overrides"""
     claims = {
         "iss": "https://login.example.test/realms/mail",
         "aud": "mail-mcp",
@@ -80,11 +88,13 @@ def token(key: rsa.RSAPrivateKey, **changes: object) -> str:
     ],
 )
 def test_wrong_identity_or_invalid_token_cannot_access_mail(claims: dict[str, object]) -> None:
+    """check subject, issuer, audience, and expiry validation reject the token"""
     verifier, key = make_verifier()
     assert asyncio.run(verifier.verify_token(token(key, **claims))) is None
 
 
 def test_http_transport_rejects_anonymous_and_nonowner_before_tool_dispatch() -> None:
+    """check unauthenticated and nonowner requests fail before MCP initialization"""
     verifier, key = make_verifier()
     server = create_server(settings(), auth=verifier)
     with TestClient(server.http_app(stateless_http=True, json_response=True)) as client:
@@ -120,6 +130,7 @@ def test_http_transport_rejects_anonymous_and_nonowner_before_tool_dispatch() ->
 
 
 def test_oauth_discovery_and_client_registration_enforce_our_callback_policy() -> None:
+    """check discovery, PKCE metadata, and dynamic callback registration restrictions"""
     import json
     import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -129,7 +140,10 @@ def test_oauth_discovery_and_client_registration_enforce_our_callback_policy() -
     issuer = "https://login.example.test/realms/mail"
 
     class Discovery(BaseHTTPRequestHandler):
+        """serve only the OIDC discovery document needed by the local proxy fixture"""
+
         def do_GET(self) -> None:
+            """return issuer and endpoint metadata for the test OIDC client"""
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -148,6 +162,7 @@ def test_oauth_discovery_and_client_registration_enforce_our_callback_policy() -
             )
 
         def log_message(self, *_: object) -> None:
+            """silence the local HTTP server request log"""
             pass
 
     discovery = HTTPServer(("127.0.0.1", 0), Discovery)

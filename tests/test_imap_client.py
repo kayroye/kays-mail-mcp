@@ -1,3 +1,7 @@
+"""verify read-only IMAP command selection and safe search value handling
+use a fake wire connection to check emitted commands without network access
+"""
+
 from __future__ import annotations
 
 from builtins import list as builtin_list
@@ -13,6 +17,8 @@ from imap_mcp.imap_client import ImapClient, _search_criteria
 
 @dataclass
 class FakeConnection:
+    """record client commands and return deterministic IMAP responses"""
+
     list_response: list[bytes | None] = field(
         default_factory=lambda: [b'(\\HasNoChildren) "/" "INBOX"']
     )
@@ -24,24 +30,30 @@ class FakeConnection:
     maximum: int = 26_214_401
 
     def response(self, code: str) -> tuple[str, list[bytes]]:
+        """return a valid UIDVALIDITY response for mailbox selection"""
         return code, [b"101"]
 
     def login(self, user: str, password: str) -> tuple[str, list[bytes]]:
+        """accept the fixture credentials without contacting a server"""
         del user, password
         return "OK", [b"logged in"]
 
     def logout(self) -> tuple[str, list[bytes]]:
+        """record session closure"""
         self.logged_out = True
         return "BYE", [b"logout"]
 
     def list(self) -> tuple[str, Any]:
+        """return the configured fixture mailbox listing"""
         return "OK", self.list_response
 
     def select(self, mailbox: str, readonly: bool = False) -> tuple[str, builtin_list[bytes]]:
+        """record the mailbox name and requested read-only mode"""
         self.selected.append((mailbox, readonly))
         return "OK", [b"1"]
 
     def uid(self, command: str, *args: str) -> tuple[str, builtin_list[object]]:
+        """record UID commands and return a size or message fixture"""
         self.uid_calls.append((command, args))
         if args[-1] == "(RFC822.SIZE)":
             return "OK", [b"1 (UID 42 RFC822.SIZE 100)"]
@@ -51,6 +63,7 @@ class FakeConnection:
 
 
 def settings() -> Settings:
+    """build minimal settings with two allowed mailboxes"""
     return load_settings(
         {
             "IMAP_HOST": "imap.example.test",
@@ -62,6 +75,7 @@ def settings() -> Settings:
 
 
 def test_client_lists_only_configured_existing_mailboxes() -> None:
+    """check mailbox listing intersects server results with the configured allowlist"""
     connection = FakeConnection(
         list_response=[b'(\\HasNoChildren) "/" "INBOX"', b'(\\HasNoChildren) "/" "Other"']
     )
@@ -74,6 +88,7 @@ def test_client_lists_only_configured_existing_mailboxes() -> None:
 
 
 def test_client_fetches_by_uid_after_readonly_select() -> None:
+    """check retrieval uses read-only selection and bounded UID fetches"""
     connection = FakeConnection()
     with ImapClient(
         settings(), connection_factory=lambda _settings, _context: connection
@@ -88,6 +103,7 @@ def test_client_fetches_by_uid_after_readonly_select() -> None:
 
 
 def test_client_rejects_unallowed_mailboxes_and_invalid_uid() -> None:
+    """check mailbox policy and positive UID validation run before fetch"""
     connection = FakeConnection()
     with ImapClient(
         settings(), connection_factory=lambda _settings, _context: connection
@@ -99,6 +115,7 @@ def test_client_rejects_unallowed_mailboxes_and_invalid_uid() -> None:
 
 
 def test_search_values_are_quoted_and_control_characters_are_rejected() -> None:
+    """check search values remain one quoted argument and reject controls"""
     criteria = _search_criteria('two "words"', "sender@example.test", None, None, None, False, None)
 
     assert criteria == ("ALL", "TEXT", '"two \\"words\\""', "FROM", '"sender@example.test"')

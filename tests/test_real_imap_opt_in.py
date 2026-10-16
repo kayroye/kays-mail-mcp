@@ -1,3 +1,7 @@
+"""hold the real-account read-only inventory smoke test behind an explicit opt-in
+require a disposable account before this test contacts an IMAP server
+"""
+
 from __future__ import annotations
 
 import os
@@ -13,7 +17,7 @@ from imap_mcp.imap_client import ImapClient
     reason="set IMAP_INTEGRATION_TEST=1 with a disposable mailbox to opt in",
 )
 def test_real_account_readonly_inventory() -> None:
-    """Opt-in smoke test; the transport selects no mailbox and performs no writes."""
+    """check an opted-in account exposes only configured mailbox names"""
     settings = load_settings()
     with ImapClient(settings) as client:
         mailboxes = client.list_mailboxes()
