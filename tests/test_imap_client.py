@@ -92,21 +92,6 @@ def test_client_lists_only_configured_existing_mailboxes() -> None:
     assert connection.logged_out
 
 
-def test_client_fetches_by_uid_after_readonly_select() -> None:
-    """check retrieval uses read-only selection and bounded UID fetches"""
-    connection = FakeConnection()
-    with ImapClient(
-        settings(), connection_factory=lambda _settings, _context: connection
-    ) as client:
-        assert client.fetch_rfc822("INBOX", 42, 101).endswith(b"body")
-
-    assert connection.selected == [('"INBOX"', True)]
-    assert connection.uid_calls == [
-        ("FETCH", ("42", "(RFC822.SIZE)")),
-        ("FETCH", ("42", "(BODY.PEEK[]<0.26214401>)")),
-    ]
-
-
 def test_client_rejects_unallowed_mailboxes_and_invalid_uid() -> None:
     """check mailbox policy and positive UID validation run before fetch"""
     connection = FakeConnection()

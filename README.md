@@ -158,8 +158,9 @@ python3.12 -m venv .venv
 .venv/bin/python tests/integration/smoke.py  # disposable Docker identity/TLS test
 ```
 
-Tests use synthetic mail and identity fixtures. The real IMAP test is opt-in and
-requires a disposable mailbox; never put real credentials into tests or issues.
+Automated tests use synthetic mail and identity fixtures. Verify real-provider
+connectivity with `./setup.sh --doctor` and a search/read through your connected
+client; never put real credentials into tests or issues.
 
 ## Attribution
 

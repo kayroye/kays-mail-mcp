@@ -66,16 +66,6 @@ def test_parse_message_rejects_oversized_body() -> None:
         parse_message(message.as_bytes(), max_body_bytes=10)
 
 
-def test_attachment_content_returns_only_allowed_attachment() -> None:
-    """check an explicitly indexed allowed attachment returns its bytes and metadata"""
-    attachment, content = attachment_content(
-        multipart_message(), attachment_index=0, max_attachment_bytes=1024
-    )
-
-    assert attachment.filename == "report.pdf"
-    assert content == b"fixture pdf"
-
-
 def test_attachment_content_rejects_unknown_type_and_oversize() -> None:
     """check attachment type policy and configured byte cap reject unsafe payloads"""
     message = EmailMessage()

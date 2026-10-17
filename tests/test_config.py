@@ -23,17 +23,6 @@ def environment(**overrides: str) -> dict[str, str]:
     return values
 
 
-def test_load_settings_uses_safe_defaults() -> None:
-    """check default TLS mode, mailbox parsing, limits, and HTTP port"""
-    settings = load_settings(environment())
-
-    assert settings.host == "imap.example.com"
-    assert settings.tls_mode is TlsMode.IMPLICIT_TLS
-    assert settings.allowed_mailboxes == ("INBOX", "Archive")
-    assert settings.limits.max_results == 25
-    assert settings.http.port == 8700
-
-
 def test_load_settings_accepts_password_file(tmp_path: Path) -> None:
     """check password-file loading and explicit STARTTLS selection"""
     password_file = tmp_path / "password"

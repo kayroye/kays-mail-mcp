@@ -4,7 +4,6 @@ use a fake IMAP client to isolate tool formatting from transport behavior
 
 from __future__ import annotations
 
-import base64
 from email.message import EmailMessage
 
 from imap_mcp.config import Settings, load_settings
@@ -28,9 +27,12 @@ class FakeAttachmentClient:
 
     def fetch_rfc822(self, mailbox: str, uid: int, uidvalidity: int) -> bytes:
         """check the requested mailbox identity and build the fixture message"""
-        assert (mailbox, uid) == ("INBOX", 7)
+        assert (mailbox, uid, uidvalidity) == ("INBOX", 7, 101)
         message = EmailMessage()
         message.set_content("body")
+        message.add_attachment(
+            b"wrong attachment", maintype="text", subtype="plain", filename="first.txt"
+        )
         message.add_attachment(
             b"pdf bytes", maintype="application", subtype="pdf", filename="report.pdf"
         )
@@ -49,18 +51,18 @@ def settings() -> Settings:
     )
 
 
-def test_get_attachment_returns_json_safe_base64_content() -> None:
-    """check indexed attachment bytes are returned as base64 with their metadata"""
+def test_attachment_selection_returns_requested_bytes_and_identity() -> None:
+    """catch always selecting the first attachment or losing the source identity"""
     tool = make_get_attachment(settings(), client_factory=FakeAttachmentClient)
 
-    result = tool("INBOX", 7, 0, 101)
+    result = tool("INBOX", 7, 1, 101)
 
     assert result == {
         "mailbox": "INBOX",
         "uid": 7,
         "uidvalidity": 101,
-        "index": 0,
+        "index": 1,
         "filename": "report.pdf",
         "content_type": "application/pdf",
-        "content_base64": base64.b64encode(b"pdf bytes").decode("ascii"),
+        "content_base64": "cGRmIGJ5dGVz",
     }

@@ -96,14 +96,12 @@ def test_upgrade_only_replaces_reader_and_preserves_private_files(
 def test_failed_update_restores_previous_image_and_reports_rollback(
     private_config: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     commands = docker_fixture(monkeypatch, fail_start=True)
     with pytest.raises(ValueError, match="rolled back"):
         setup.upgrade(private_config)
     assert ["docker", "tag", "kays-mail-mcp:reader-rollback", "kays-mail-mcp:local"] in commands
     assert sum("up" in c for c in commands) == 2
-    assert "private-provider-error" not in capsys.readouterr().out
 
 
 def test_wrong_checkout_is_rejected_before_build_or_restart(

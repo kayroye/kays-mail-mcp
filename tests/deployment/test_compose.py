@@ -25,8 +25,6 @@ def test_effective_compose_configuration_keeps_origin_and_database_private(tmp_p
             str(config / "compose.yaml"),
             "--profile",
             "public",
-            "--profile",
-            "public",
             "config",
             "--format",
             "json",

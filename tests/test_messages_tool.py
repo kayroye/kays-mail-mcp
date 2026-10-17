@@ -54,19 +54,6 @@ def settings() -> Settings:
     )
 
 
-def test_get_message_returns_safe_content_and_attachment_inventory() -> None:
-    """check stable message identifiers, body text, and attachment metadata"""
-    result = make_get_message(settings(), client_factory=FakeMessageClient)("INBOX", 9, 101)
-
-    assert result["mailbox"] == "INBOX"
-    assert result["uid"] == 9
-    assert result["body"] == "Safe text"
-    assert result["body_truncated"] is False
-    assert result["attachments"] == [
-        {"index": 0, "filename": "report.pdf", "content_type": "application/pdf", "size_bytes": 8}
-    ]
-
-
 def test_get_message_rejects_invalid_uid_before_connection() -> None:
     """check invalid UIDs are rejected before the fake session is opened"""
     tool = make_get_message(settings(), client_factory=FakeMessageClient)

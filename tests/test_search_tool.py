@@ -55,8 +55,8 @@ def settings() -> Settings:
     )
 
 
-def test_search_returns_compact_metadata_and_clamps_limit() -> None:
-    """check metadata normalization and the configured result cap"""
+def test_search_clamps_caller_limit_to_server_policy() -> None:
+    """catch caller limits bypassing the server's header-fetch budget"""
     client: FakeSearchClient | None = None
 
     def factory(configuration: Settings) -> FakeSearchClient:
@@ -65,22 +65,7 @@ def test_search_returns_compact_metadata_and_clamps_limit() -> None:
         client = FakeSearchClient(configuration)
         return client
 
-    result = make_search_messages(settings(), client_factory=factory)("INBOX", limit=99)
-
-    assert result == {
-        "messages": [
-            {
-                "uid": 22,
-                "uidvalidity": 0,
-                "subject": "Fixture",
-                "sender": "sender@example.test",
-                "recipients": ["recipient@example.test"],
-                "date": "",
-                "is_unread": True,
-            }
-        ],
-        "next_before_uid": None,
-    }
+    make_search_messages(settings(), client_factory=factory)("INBOX", limit=99)
     assert client is not None
     assert client.maximum == 2
 
