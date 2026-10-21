@@ -7,6 +7,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import stat
 import sys
 from pathlib import Path
@@ -19,6 +20,47 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC is not None and SPEC.loader is not None
 setup = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(setup)
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="Docker Compose is required")
+def test_regenerated_compose_retains_readonly_security_mount(tmp_path: Path) -> None:
+    """Catch management commands silently dropping trust mounts after base regeneration."""
+    import subprocess
+
+    (tmp_path / "compose.env").write_text("")
+    (tmp_path / "compose.yaml").write_text(
+        json.dumps({"services": {"mail": {"image": "busybox:1.37"}}})
+    )
+    source = tmp_path / "trusted-cas"
+    source.mkdir()
+    override = tmp_path / "compose.security.yaml"
+    override.write_text(
+        json.dumps(
+            {"services": {"mail": {"volumes": [f"{source}:/etc/ssl/certs:ro"]}}}
+        )
+    )
+    override.chmod(0o600)
+    result = subprocess.run(
+        setup._compose_arguments(tmp_path, ["config", "--format", "json"]),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    mounts = json.loads(result.stdout)["services"]["mail"]["volumes"]
+    assert len(mounts) == 1
+    assert mounts[0]["source"] == str(source)
+    assert mounts[0]["target"] == "/etc/ssl/certs"
+    assert mounts[0]["read_only"] is True
+
+
+def test_security_override_rejects_symlink(tmp_path: Path) -> None:
+    """Prevent an indirect override from bypassing the private configuration boundary."""
+    target = tmp_path / "elsewhere.yaml"
+    target.write_text("services: {}\n")
+    target.chmod(0o600)
+    (tmp_path / "compose.security.yaml").symlink_to(target)
+    with pytest.raises(ValueError, match="owner-only regular file"):
+        setup._compose_arguments(tmp_path, ["up", "-d"])
 
 
 def answers() -> dict[str, str]:

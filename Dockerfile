@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 HOME=/state 
 WORKDIR /app
 COPY requirements.lock ./
 # install only the hash-locked runtime dependencies
-RUN python -m pip install pip==26.2.1 && python -m pip install --require-hashes -r requirements.lock
+RUN python -m pip install pip==26.2.2 && python -m pip install --require-hashes -r requirements.lock
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
 # install the package before switching to its unprivileged runtime account

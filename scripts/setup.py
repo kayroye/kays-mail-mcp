@@ -320,15 +320,25 @@ def compose(config: Path, arguments: list[str]) -> None:
 
 
 def _compose_arguments(config: Path, arguments: list[str]) -> list[str]:
-    return [
+    command = [
         "docker",
         "compose",
         "--env-file",
         str(config / "compose.env"),
         "-f",
         str(config / "compose.yaml"),
-        *arguments,
     ]
+    security_override = config / "compose.security.yaml"
+    if security_override.exists():
+        info = security_override.lstat()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.getuid()
+            or info.st_mode & 0o077
+        ):
+            raise ValueError("Security override must be an owner-only regular file")
+        command.extend(["-f", str(security_override)])
+    return [*command, *arguments]
 
 
 def _capture(command: list[str]) -> str:
