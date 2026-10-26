@@ -35,9 +35,7 @@ def test_regenerated_compose_retains_readonly_security_mount(tmp_path: Path) -> 
     source.mkdir()
     override = tmp_path / "compose.security.yaml"
     override.write_text(
-        json.dumps(
-            {"services": {"mail": {"volumes": [f"{source}:/etc/ssl/certs:ro"]}}}
-        )
+        json.dumps({"services": {"mail": {"volumes": [f"{source}:/etc/ssl/certs:ro"]}}})
     )
     override.chmod(0o600)
     result = subprocess.run(
@@ -192,3 +190,19 @@ def test_existing_configuration_rejects_symlinked_secret_directory(tmp_path: Pat
     (config / "secrets").symlink_to(tmp_path / "elsewhere")
     with pytest.raises(ValueError):
         setup.prepare(config, answers(), "secret", "owner-login-secret")
+
+
+@pytest.mark.parametrize(
+    "maximum,idle",
+    [("0", "0"), ("-1", "1"), ("180", "181"), ("366", "90"), ("1.5", "1"), ("many", "90")],
+)
+def test_invalid_session_limits_leave_no_private_state(
+    tmp_path: Path,
+    maximum: str,
+    idle: str,
+) -> None:
+    """Prevent unlimited, malformed or inverted lifetime policies reaching Keycloak."""
+    data = {**answers(), "session_max_days": maximum, "session_idle_days": idle}
+    with pytest.raises(ValueError, match="Session"):
+        setup.prepare(tmp_path / "private", data, "secret", "long-login-password")
+    assert not (tmp_path / "private").exists()

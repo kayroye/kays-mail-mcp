@@ -82,6 +82,60 @@ owner passwords/disable users through local identity administration. Public rout
 block administration. The generated bootstrap administrator password is in
 `secrets/admin_password`; never put it in command arguments or a URL.
 
+## Connection lifetime
+
+New installations use a 180-day maximum OAuth session and expire after 90 days
+without a successful refresh. Refresh activity resets the inactivity timer, never
+the absolute maximum. A client's background refreshes count as activity even when
+you have not opened ChatGPT. Five-minute access tokens, refresh-token rotation,
+PKCE, callback restrictions and owner/audience verification remain enabled.
+Longer refresh lifetimes allow a stolen refresh credential to remain useful longer
+unless revoked; protect OAuth state and use the revocation procedure above.
+
+For an existing installation (including installations with the old seven-day
+maximum and one-day inactivity limits), explicitly apply the new policy:
+
+```bash
+./setup.sh --configure-sessions --session-max-days 180 --session-idle-days 90
+./setup.sh --doctor
+```
+
+Use `--config-dir` for a nondefault installation. Omitted day options use the
+180/90 defaults, so provide both when setting a custom policy. Values must be whole
+days with `1 <= idle <= maximum <= 365`; zero/unlimited sessions are rejected.
+Running setup again or `--upgrade` preserves the current policy. Editing a realm
+bootstrap JSON does not update an already imported realm.
+
+This command uses Keycloak's loopback administration port and the existing
+`bootstrap-admin` credential file. If Docker suppresses port publication because
+all attached networks are internal, it resolves the running Keycloak container
+and uses its private identity-network address after verifying the network is
+internal. Neither path exposes administration publicly. It disables HTTP proxies and redirects for
+administration, captures credentials privately, updates only the realm's SSO and
+inherited client session limits, verifies readback and saves the chosen values in
+private `settings.json`. It does not restart services or rotate keys. If you have
+replaced the bootstrap administrator, manage these limits with your replacement
+administrator locally instead. Per-client session overrides, if added manually in
+Keycloak, can shorten the realm limits and must be reviewed separately.
+
+Before the first change, original realm limits are retained in owner-only
+`session-policy-backup.json` in the private configuration directory. Failed
+readback or local persistence triggers an attempt to restore the prior live
+limits; if identity administration is unavailable, inspect the limits locally
+before retrying. To restore the original generated policy, use
+`--configure-sessions --session-max-days 7 --session-idle-days 1`.
+
+**Reconnect existing clients once** to obtain tokens with the longer lifetime.
+Already issued refresh tokens retain their encoded expiry; this change cannot
+revive expired grants. You may still be asked to authenticate after revocation,
+key/state loss, or a client-side credential loss.
+
+The policy follows [OAuth refresh-token guidance (RFC 9700)](https://datatracker.ietf.org/doc/html/rfc9700/#section-4.14)
+and [MCP authorization and refresh-token requirements](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#refresh-tokens).
+Neither specifies a universal maximum duration. We use bounded online sessions;
+`offline_access` is not needed. See [Keycloak session timeouts](https://www.keycloak.org/docs/latest/server_admin/#_timeouts)
+for the maximum and inactivity semantics.
+
 ## Upgrade and rollback
 
 ### Reader-only source updates

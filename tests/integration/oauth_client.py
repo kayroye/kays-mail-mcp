@@ -38,6 +38,9 @@ class Form(HTMLParser):
 
 def main() -> None:
     """run or resume the synthetic OAuth client flow and verify protected MCP calls"""
+    idle_days = (
+        int(sys.argv[sys.argv.index("--idle-days") + 1]) if "--idle-days" in sys.argv else 90
+    )
     base = "https://mail.example.test"
     if "--resume" in sys.argv:
         # check that a refreshed access token remains valid after the mail container restarts
@@ -58,7 +61,17 @@ def main() -> None:
             )
             assert result.status_code == 200, result.status_code
             assert not result.json()["result"].get("isError")
-        print("PASS: previously issued token works after container restart")
+            refreshed = client.post(
+                base + "/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": tokens["refresh_token"],
+                    "client_id": tokens["client_id"],
+                    "resource": base + "/mcp",
+                },
+            )
+            assert refreshed.status_code == 200
+        print("PASS: access and refresh tokens work after container restart")
         return
     callback = "https://chatgpt.com/connector_platform_oauth_redirect"
     # derive the PKCE challenge from a verifier kept only in this client process
@@ -144,6 +157,12 @@ def main() -> None:
         )
         assert exchange.status_code == 200, (exchange.status_code, exchange.text[:150])
         tokens = exchange.json()
+        # Catch day/second mistakes and proxy TTLs that silently shorten Keycloak grants.
+        assert tokens["expires_in"] == 300
+        payload = tokens["refresh_token"].split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        assert idle_days * 86400 - 30 <= claims["exp"] - claims["iat"] <= idle_days * 86400
+
         # use the issued owner token for initialization and a harmless health tool call
         headers = {
             "Authorization": "Bearer " + tokens["access_token"],
@@ -187,12 +206,36 @@ def main() -> None:
             },
         )
         assert refreshed.status_code == 200
+        assert refreshed.json()["refresh_token"] != tokens["refresh_token"]
+        replay = client.post(
+            base + "/token",
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": tokens["refresh_token"],
+                "client_id": client_id,
+                "resource": base + "/mcp",
+            },
+        )
+        # FastMCP maps invalid_grant to HTTP 401 for its MCP authorization endpoint.
+        assert replay.status_code == 401, replay.status_code
+        assert replay.json()["error"] == "invalid_grant"
+        payload = refreshed.json()["refresh_token"].split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        assert idle_days * 86400 - 30 <= claims["exp"] - claims["iat"] <= idle_days * 86400
         # persist only the refreshed token for the restart half of the smoke test
         fd = os.open("/state/integration-session.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w") as stream:
-            json.dump({"access_token": refreshed.json()["access_token"]}, stream)
+            json.dump(
+                {
+                    "access_token": refreshed.json()["access_token"],
+                    "refresh_token": refreshed.json()["refresh_token"],
+                    "client_id": client_id,
+                },
+                stream,
+            )
         print(
-            "PASS: TLS, route isolation, consent, password login, PKCE, owner MCP call and refresh"
+            f"PASS: OAuth/MCP access, {idle_days}-day refresh lifetime, "
+            "rotation and replay rejection"
         )
 
 

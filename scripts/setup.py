@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import ipaddress
 import json
 import os
 import re
@@ -15,11 +16,13 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import uuid
 from pathlib import Path
+from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.parse import urlencode, urlsplit
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REDIRECT_URIS = (
@@ -83,6 +86,21 @@ def read_release_images(source: Path) -> dict[str, str]:
     return {"MAIL_IMAGE": images["mail"], "KEYCLOAK_IMAGE": images["keycloak"]}
 
 
+def session_policy(maximum: str, idle: str) -> dict[str, int]:
+    """require finite whole-day limits and let client sessions inherit the realm limits"""
+    if not re.fullmatch(r"[0-9]{1,3}", maximum) or not re.fullmatch(r"[0-9]{1,3}", idle):
+        raise ValueError("Session limits must be whole days: 1 <= idle <= maximum <= 365")
+    max_days, idle_days = int(maximum), int(idle)
+    if not 1 <= idle_days <= max_days <= 365:
+        raise ValueError("Session limits must satisfy 1 <= idle <= maximum <= 365 days")
+    return {
+        "ssoSessionMaxLifespan": max_days * 86400,
+        "ssoSessionIdleTimeout": idle_days * 86400,
+        "clientSessionMaxLifespan": 0,
+        "clientSessionIdleTimeout": 0,
+    }
+
+
 def prepare(config: Path, answers: dict[str, str], imap_password: str, login_password: str) -> None:
     """write a new private deployment once and preserve any complete installation"""
     if os.getuid() == 0:
@@ -96,6 +114,9 @@ def prepare(config: Path, answers: dict[str, str], imap_password: str, login_pas
         validate_existing(config)
         return
     data = {name: _clean(value.strip(), name) for name, value in answers.items()}
+    maximum = data.setdefault("session_max_days", "180")
+    idle = data.setdefault("session_idle_days", "90")
+    policy = session_policy(maximum, idle)
     # validate both public origins and every callback before creating private state
     mcp_url, login_url = _origin(data["mcp_url"]), _origin(data["login_url"])
     if mcp_url == login_url:
@@ -150,8 +171,7 @@ def prepare(config: Path, answers: dict[str, str], imap_password: str, login_pas
         "waitIncrementSeconds": 60,
         "maxFailureWaitSeconds": 900,
         "accessTokenLifespan": 300,
-        "ssoSessionIdleTimeout": 86400,
-        "ssoSessionMaxLifespan": 604800,
+        **policy,
         "revokeRefreshToken": True,
         "refreshTokenMaxReuse": 0,
         "sslRequired": "external",
@@ -331,11 +351,7 @@ def _compose_arguments(config: Path, arguments: list[str]) -> list[str]:
     security_override = config / "compose.security.yaml"
     if security_override.exists():
         info = security_override.lstat()
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or info.st_uid != os.getuid()
-            or info.st_mode & 0o077
-        ):
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise ValueError("Security override must be an owner-only regular file")
         command.extend(["-f", str(security_override)])
     return [*command, *arguments]
@@ -389,6 +405,135 @@ def upgrade(config: Path) -> None:
         raise ValueError("Reader update failed; rolled back to the previous image") from None
     print("Reader upgraded; previous image retained as kays-mail-mcp:reader-rollback.")
     print("Run ./setup.sh --doctor and refresh client tool discovery if schemas changed.")
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    """never forward administrative credentials to a redirected endpoint"""
+
+    def redirect_request(self, *args: object, **kwargs: object) -> None:
+        return None
+
+
+def admin_address(config: Path) -> str:
+    """prefer loopback; internal-only Docker networks may suppress published ports"""
+    try:
+        address = _capture(_compose_arguments(config, ["port", "keycloak", "8080"]))
+    except ValueError:
+        container = _capture(_compose_arguments(config, ["ps", "-q", "keycloak"]))
+        if not container or len(container.splitlines()) != 1:
+            raise ValueError("One running Keycloak is required") from None
+        details = json.loads(
+            _capture(
+                [
+                    "docker",
+                    "inspect",
+                    "--format",
+                    '{"project":{{json (index .Config.Labels "com.docker.compose.project")}},'
+                    '"networks":{{json .NetworkSettings.Networks}}}',
+                    container,
+                ]
+            )
+        )
+        network = details["project"] + "_identity"
+        internal = _capture(["docker", "network", "inspect", "--format", "{{.Internal}}", network])
+        if internal != "true":
+            raise ValueError(
+                "Identity administration requires an internal Docker network"
+            ) from None
+        address_ip = ipaddress.IPv4Address(details["networks"][network]["IPAddress"])
+        if not address_ip.is_private:
+            raise ValueError("Identity administration requires a private Docker address") from None
+        return str(address_ip) + ":8080"
+    if not re.fullmatch(r"127\.0\.0\.1:[0-9]{1,5}", address):
+        raise ValueError("Session configuration requires the loopback Keycloak administration port")
+    return address
+
+
+def configure_sessions(config: Path, maximum: str, idle: str) -> None:
+    """apply a finite policy through local administration, preserving all identities and keys"""
+    policy = session_policy(maximum, idle)
+    validate_existing(config)
+    address = admin_address(config)
+    # Ignore proxy environment variables, and never follow redirects carrying admin credentials.
+    opener = build_opener(ProxyHandler({}), _NoRedirect())
+    base = "http://" + address
+    password = (config / "secrets/admin_password").read_text().strip()
+    token = ""
+
+    def request(
+        path: str, *, method: str = "GET", data: bytes | None = None, form: bool = False
+    ) -> dict[str, Any]:
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded" if form else "application/json"
+        }
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        req = Request(base + path, data=data, headers=headers, method=method)
+        with opener.open(req, timeout=15) as response:
+            body = response.read()
+        result: dict[str, Any] = json.loads(body) if body else {}
+        return result
+
+    try:
+        credentials = request(
+            "/realms/master/protocol/openid-connect/token",
+            method="POST",
+            form=True,
+            data=urlencode(
+                {
+                    "client_id": "admin-cli",
+                    "grant_type": "password",
+                    "username": "bootstrap-admin",
+                    "password": password,
+                }
+            ).encode(),
+        )
+        token = credentials["access_token"]
+        current = request("/admin/realms/mail")
+        # Retain a private rollback record of policy fields only, never tokens or the full realm.
+        previous = {name: current.get(name, 0) for name in policy}
+        backup = config / "session-policy-backup.json"
+        if not backup.exists():
+            _write(backup, json.dumps(previous, indent=2) + "\n")
+        try:
+            request("/admin/realms/mail", method="PUT", data=json.dumps(policy).encode())
+            actual = request("/admin/realms/mail")
+            if any(actual.get(name, 0) != value for name, value in policy.items()):
+                raise ValueError("Session policy readback did not match")
+            settings = json.loads((config / "settings.json").read_text())
+            settings.update(session_max_days=maximum, session_idle_days=idle)
+            with tempfile.NamedTemporaryFile(mode="w", dir=config, delete=False) as stream:
+                temporary = Path(stream.name)
+                try:
+                    json.dump(settings, stream, indent=2)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                    os.replace(temporary, config / "settings.json")
+                finally:
+                    temporary.unlink(missing_ok=True)
+        except (OSError, ValueError, URLError):
+            request("/admin/realms/mail", method="PUT", data=json.dumps(previous).encode())
+            raise
+    except (OSError, ValueError, KeyError, URLError):
+        raise ValueError(
+            "Session configuration failed; check local identity administration. "
+            "Original limits are in session-policy-backup.json if the realm was reached."
+        ) from None
+    finally:
+        if token:
+            try:
+                request(
+                    "/realms/master/protocol/openid-connect/logout",
+                    method="POST",
+                    form=True,
+                    data=urlencode(
+                        {"client_id": "admin-cli", "refresh_token": credentials["refresh_token"]}
+                    ).encode(),
+                )
+            except (OSError, ValueError, KeyError, URLError):
+                pass  # best effort; no administrator credentials are persisted
+    print(f"Session policy applied: {maximum} days maximum, {idle} days without refresh.")
+    print("Existing tokens retain their expiry; reconnect clients once for the new lifetime.")
 
 
 def _http_probe(url: str, expected_status: int, issuer: str | None = None) -> bool:
@@ -514,19 +659,39 @@ def main(argv: list[str] | None = None) -> int:
     modes.add_argument(
         "--doctor", action="store_true", help="diagnose services, HTTPS, OAuth and IMAP"
     )
+    modes.add_argument(
+        "--configure-sessions",
+        action="store_true",
+        help="apply session limits to an existing realm",
+    )
+    parser.add_argument("--session-max-days", help="maximum connection lifetime in days [180]")
+    parser.add_argument(
+        "--session-idle-days", help="days without a token refresh before expiry [90]"
+    )
     parser.add_argument(
         "--public", action="store_true", help="enable a separately configured Cloudflare Tunnel"
     )
     args = parser.parse_args(argv)
-    if args.public and (args.upgrade or args.doctor):
-        parser.error("--public cannot be combined with --upgrade or --doctor")
+    if args.public and (args.upgrade or args.doctor or args.configure_sessions):
+        parser.error("--public cannot be combined with a management operation")
     try:
         # a check-only invocation validates available tooling and existing files without setup
         prerequisites()
         config = args.config_dir.absolute()
-        if args.upgrade or args.doctor:
+        if (
+            (args.session_max_days or args.session_idle_days)
+            and not args.configure_sessions
+            and (args.upgrade or args.doctor or args.check or (config / "settings.json").exists())
+        ):
+            raise ValueError("Use --configure-sessions to change an existing installation's limits")
+        if args.upgrade or args.doctor or args.configure_sessions:
             if not (config / "settings.json").exists():
                 raise ValueError("No installation found; run ./setup.sh first")
+            if args.configure_sessions:
+                configure_sessions(
+                    config, args.session_max_days or "180", args.session_idle_days or "90"
+                )
+                return 0
             if args.doctor:
                 return 0 if doctor(config) else 1
             upgrade(config)
@@ -546,6 +711,8 @@ def main(argv: list[str] | None = None) -> int:
                 "Private setup: passwords stay on this server. Use a dedicated mail app password."
             )
             data = {
+                "session_max_days": args.session_max_days or "180",
+                "session_idle_days": args.session_idle_days or "90",
                 "mcp_url": input("MCP HTTPS URL: ").strip(),
                 "login_url": input("Login HTTPS URL (different hostname): ").strip(),
                 "login_email": input("Login email: ").strip(),

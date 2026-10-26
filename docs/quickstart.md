@@ -31,6 +31,18 @@ location with `--config-dir /absolute/private/path`.
 ./setup.sh --upgrade     # upgrade only the source-built reader, with rollback on startup failure
 ```
 
+New connections last up to **180 days**, expiring sooner after **90 days without
+a successful token refresh**. Access tokens last five minutes and renew silently.
+These are server-owner settings; clients do not choose their own lifetime at login.
+To choose different limits for a new installation:
+
+```bash
+./setup.sh --session-max-days 180 --session-idle-days 90
+```
+
+Both values must be whole days with `1 <= idle <= maximum <= 365`. See
+[session lifetime configuration](operations.md#connection-lifetime) to change a running installation.
+
 Reruns preserve identities, secrets and state. A failed, incomplete configuration
 is not silently overwritten. Inspect it locally; never paste it into an issue.
 The initial realm import contains your new login password until Keycloak imports

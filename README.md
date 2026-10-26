@@ -44,6 +44,8 @@ https://your-mail-hostname.example/mcp
 ```
 
 Complete the browser login using the email/password you chose during setup.
+New connections last up to 180 days, with expiry after 90 days without a token
+refresh. Server owners can [configure these limits](docs/operations.md#connection-lifetime).
 Allow the client's OAuth callback URL in your private configuration; see
 [client setup](docs/quickstart.md#connect-a-client).
 

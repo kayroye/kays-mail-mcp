@@ -94,6 +94,8 @@ def main() -> None:
                 "  ssl_certificate_key /fixtures/key.pem;",
             )
         )
+        # Several back-to-back login/replay probes need more burst capacity in this fixture.
+        nginx = nginx.replace("zone=oauth burst=10", "zone=oauth burst=40")
         nginx = nginx.replace(
             "listen 8080 default_server;",
             "listen 8080 default_server; listen 443 ssl default_server;",
@@ -136,6 +138,33 @@ def main() -> None:
             )
             subprocess.run(
                 [*command, "exec", "-T", "mail", "python", "/fixtures/oauth_client.py"], check=True
+            )
+            # Exercise the same local administrator migration used on existing installations.
+            setup.configure_sessions(config, "120", "60")
+            subprocess.run(
+                [
+                    *command,
+                    "exec",
+                    "-T",
+                    "mail",
+                    "python",
+                    "-c",
+                    "from pathlib import Path; Path('/state/integration-session.json').unlink()",
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    *command,
+                    "exec",
+                    "-T",
+                    "mail",
+                    "python",
+                    "/fixtures/oauth_client.py",
+                    "--idle-days",
+                    "60",
+                ],
+                check=True,
             )
             # verify state survives restarting the same service without rebuilding or reprovisioning
             subprocess.run([*command, "restart", "mail"], check=True)
