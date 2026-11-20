@@ -13,7 +13,21 @@ been performed.
 
 ## Quick start
 
-On a Linux server with Docker Engine, Docker Compose v2 and Python 3.11+:
+Use a Linux x86-64 server with Docker Engine, Docker Compose v2, Bash and
+Python 3.11+. You'll need two HTTPS hostnames, one for MCP and one for login.
+
+Download `kays-mail-mcp.tar.gz` and `SHA256SUMS` from the same version on the
+[GitHub Releases page](https://github.com/kayroye/kays-mail-mcp/releases).
+In the directory containing both downloads:
+
+```bash
+sha256sum -c SHA256SUMS &&
+  tar -xzf kays-mail-mcp.tar.gz &&
+  cd kays-mail-mcp &&
+  ./setup.sh
+```
+
+To install from the source checkout instead:
 
 ```bash
 git clone https://github.com/kayroye/kays-mail-mcp.git
@@ -76,8 +90,9 @@ capabilities. This is a private server connection, not an app-store listing.
 Update your source checkout to the desired version before upgrading; the command
 does not pull Git changes. It retains the running image for rollback, waits for
 the replacement to become healthy, and reloads the gateway. Startup/reload failure
-triggers automatic rollback. Identity/database changes use the separate full
-release procedure. See [operations](docs/operations.md).
+triggers automatic rollback. For a digest-pinned release installation or an
+update that changes identity or database services, follow the
+[full release upgrade procedure](docs/operations.md#full-release-upgrades).
 
 ## Tools
 
