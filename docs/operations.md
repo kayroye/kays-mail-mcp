@@ -138,6 +138,52 @@ for the maximum and inactivity semantics.
 
 ## Upgrade and rollback
 
+### Reader upgrades by release tag
+
+Run the updater from a checkout or archive that includes it. If you installed
+`v0.1.0-alpha.1`, keep that extracted directory in place and run the newer
+`setup.sh` against the existing private configuration:
+
+```bash
+./setup.sh --upgrade-release TAG
+./setup.sh --doctor
+```
+
+Replace `TAG` with the exact tag you want from
+[GitHub Releases](https://github.com/kayroye/kays-mail-mcp/releases).
+Add `--config-dir /path/to/existing/config` to both commands
+if you installed with a custom path. Check the target's release notes first.
+Releases that require a change to Compose, nginx, Keycloak, PostgreSQL, or the
+OAuth storage format need the full upgrade procedure below.
+
+The updater verifies the download checksum and prepares the target reader image
+before restarting the reader. It uses the release's pinned image when available
+and builds from the verified archive otherwise. Mail settings, secrets, OAuth
+state, the identity database, and the original deployment directory stay in
+place. Expect a short interruption while the reader is replaced. The updater
+saves the new image selection only after Docker reports it healthy and the
+gateway can reach its OAuth discovery endpoint. Verify an actual search and
+message read in your client afterward.
+
+If the replacement fails, the updater restores the previous reader and reloads
+nginx. If rollback cannot finish or the updater is forcibly stopped before it
+saves the new version, recover the reader from the image still selected in the
+existing `compose.env`. Use the same Compose files you normally use, including
+any `compose.security.yaml` overlay:
+
+```bash
+config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/kays-mail-mcp"
+compose=(docker compose --env-file "$config_dir/compose.env" -f "$config_dir/compose.yaml")
+if [ -f "$config_dir/compose.security.yaml" ]; then
+  compose+=(-f "$config_dir/compose.security.yaml")
+fi
+"${compose[@]}" up -d --no-deps --no-build --pull never --wait mail &&
+  "${compose[@]}" exec -T gateway nginx -s reload
+```
+
+Keep the original release directory and previous image until you've verified
+the upgrade. Avoid running setup or other Compose changes during an upgrade.
+
 ### Reader-only source updates
 
 After updating the checkout to the intended version, run:
@@ -154,7 +200,7 @@ and reloads nginx. If startup or gateway reload fails, it attempts to restore th
 previous image, waits for it and reloads nginx again. Failed automatic rollback
 reports the retained image and manual recovery location. It does not pull Git
 changes, update identity/database services or rewrite private configuration.
-Digest-pinned release installations use the full-release procedure below.
+Use the release tag procedure above for a reader distributed as a release.
 
 The equivalent manual procedure is retained below for recovery and inspection.
 

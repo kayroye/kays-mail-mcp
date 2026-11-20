@@ -29,6 +29,13 @@ retained rollback image and automatic recovery after startup/reload failure.
 discovery and read-only mailbox access, reporting actionable failures without
 printing credentials or mail. Neither command changes identity/database state.
 
+`./setup.sh --upgrade-release TAG` verifies the selected GitHub release and
+replaces only the reader. It preserves existing settings and OAuth logins and
+restores the previous reader if startup or the gateway check fails. Run it from
+this release against your existing configuration. Check the target's notes and
+use the full upgrade procedure for changes that require an identity, database,
+or deployment migration.
+
 Download the archive and SHA256SUMS, verify the checksum, extract, then run
 `./setup.sh`. Linux x86-64, Docker Engine, Compose v2 and Python 3.11+ are required.
 Domain/tunnel authorization and mailbox credentials still require your input.

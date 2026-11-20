@@ -164,3 +164,48 @@ def test_doctor_cli_reports_success_without_restarting_services(
     monkeypatch.setattr(setup, "_http_probe", lambda *args: True)
     assert setup.main(["--doctor", "--config-dir", str(private_config)]) == 0
     assert not any("up" in c or "build" in c or "tag" in c for c in commands)
+
+
+def test_failed_release_upgrade_restores_running_reader_and_keeps_config(
+    private_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """a failed replacement must restore the old reader without committing the new image"""
+    old_image = "kays-mail-mcp:local"
+    new_image = "ghcr.io/kayroye/kays-mail-mcp@sha256:" + "b" * 64
+    old_id = "sha256:" + "a" * 64
+    env_file = private_config / "compose.env"
+    original = env_file.read_bytes()
+    running = old_image
+    attempted: list[str] = []
+
+    def stage(version: str, _directory: Path) -> str:
+        assert version == "v0.1.0-alpha.2"
+        return new_image
+
+    def run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        nonlocal running
+        output = ""
+        status = 0
+        if command[:2] == ["docker", "compose"]:
+            selected_env = Path(command[command.index("--env-file") + 1])
+            image = new_image if new_image in selected_env.read_text() else old_image
+            if "config" in command:
+                output = json.dumps({"services": {"mail": {"image": image}}})
+            elif "ps" in command:
+                output = "fixture-container"
+            elif "up" in command:
+                attempted.append(image)
+                running = image
+                status = int(image == new_image)
+        elif "inspect" in command:
+            output = old_id
+        return subprocess.CompletedProcess(command, status, output, "")
+
+    monkeypatch.setattr(setup, "_stage_release_image", stage, raising=False)
+    monkeypatch.setattr(setup.subprocess, "run", run)
+    monkeypatch.setattr(setup, "prerequisites", lambda: None)
+    assert setup.main(["--config-dir", str(private_config), "--upgrade-release",
+                       "v0.1.0-alpha.2"]) == 1
+    assert attempted == [new_image, old_image]
+    assert running == old_image
+    assert env_file.read_bytes() == original

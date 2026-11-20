@@ -71,6 +71,9 @@ def main() -> None:
                 },
             )
             assert refreshed.status_code == 200
+            Path("/state/integration-session.json").write_text(
+                json.dumps({**refreshed.json(), "client_id": tokens["client_id"]})
+            )
         print("PASS: access and refresh tokens work after container restart")
         return
     callback = "https://chatgpt.com/connector_platform_oauth_redirect"

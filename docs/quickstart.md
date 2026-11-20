@@ -29,6 +29,7 @@ location with `--config-dir /absolute/private/path`.
 ./setup.sh --no-start    # prepare settings without starting containers
 ./setup.sh --doctor      # diagnose an existing installation without restarting it
 ./setup.sh --upgrade     # upgrade only the source-built reader, with rollback on startup failure
+./setup.sh --upgrade-release TAG  # replace the reader with an exact published version
 ```
 
 New connections last up to **180 days**, expiring sooner after **90 days without
@@ -121,4 +122,5 @@ source directory: Compose uses it for the identity entrypoint and source-build
 fallback. Releases with `release-images.json` use digest-pinned prebuilt images whose public
 download was checked during release. Without that manifest, setup builds locally
 from the included source.
-See [operations](operations.md) before upgrading or deleting files.
+See [release upgrades](operations.md#reader-upgrades-by-release-tag) before
+upgrading or deleting extracted release directories.

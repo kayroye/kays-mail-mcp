@@ -6,7 +6,10 @@ keep credentials in owner-only files and generated runtime settings outside the 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import getpass
+import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -16,8 +19,11 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
+import time
 import uuid
+from http.client import IncompleteRead
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -29,6 +35,10 @@ DEFAULT_REDIRECT_URIS = (
     "http://127.0.0.1:*/callback,http://127.0.0.1:*/callback/*,"
     "http://localhost:*/callback,https://chatgpt.com/connector_platform_oauth_redirect"
 )
+RELEASE_REPOSITORY = "kayroye/kays-mail-mcp"
+RELEASE_ARCHIVE = "kays-mail-mcp.tar.gz"
+RELEASE_MAX_BYTES = 32 * 1024 * 1024
+READER_RELEASE_KEY = "KAYS_MAIL_READER_RELEASE"
 
 
 def _clean(value: str, name: str) -> str:
@@ -339,12 +349,14 @@ def compose(config: Path, arguments: list[str]) -> None:
         )
 
 
-def _compose_arguments(config: Path, arguments: list[str]) -> list[str]:
+def _compose_arguments(
+    config: Path, arguments: list[str], *, env_file: Path | None = None
+) -> list[str]:
     command = [
         "docker",
         "compose",
         "--env-file",
-        str(config / "compose.env"),
+        str(env_file or config / "compose.env"),
         "-f",
         str(config / "compose.yaml"),
     ]
@@ -368,6 +380,8 @@ def _capture(command: list[str]) -> str:
 def upgrade(config: Path) -> None:
     """update only a source-built reader, retaining and restoring the running image on failure"""
     validate_existing(config)
+    if _has_managed_release(config):
+        raise ValueError("This reader is managed by release tag; use --upgrade-release TAG")
     deployment = json.loads(_capture(_compose_arguments(config, ["config", "--format", "json"])))
     mail = deployment.get("services", {}).get("mail", {})
     context = mail.get("build", {}).get("context", "")
@@ -405,6 +419,165 @@ def upgrade(config: Path) -> None:
         raise ValueError("Reader update failed; rolled back to the previous image") from None
     print("Reader upgraded; previous image retained as kays-mail-mcp:reader-rollback.")
     print("Run ./setup.sh --doctor and refresh client tool discovery if schemas changed.")
+
+
+def _download_release_asset(version: str, asset: str, limit: int) -> bytes:
+    url = f"https://github.com/{RELEASE_REPOSITORY}/releases/download/{version}/{asset}"
+    try:
+        with urlopen(url, timeout=30) as response:
+            data: bytes = response.read(limit + 1)
+    except (OSError, IncompleteRead) as exc:
+        raise ValueError(
+            f"Could not download {asset} for {version}; check the release tag"
+        ) from exc
+    if len(data) > limit:
+        raise ValueError(f"Release asset {asset} exceeds its size limit")
+    return data
+
+
+def _has_managed_release(config: Path) -> bool:
+    return any(
+        line.startswith(f"{READER_RELEASE_KEY}=")
+        for line in (config / "compose.env").read_text().splitlines()
+    )
+
+
+def _stage_release_image(version: str, workspace: Path) -> str:
+    """verify the published bundle and make its reader image available locally"""
+    sums = _download_release_asset(version, "SHA256SUMS", 4096)
+    expected = re.fullmatch(rb"([a-f0-9]{64})  kays-mail-mcp\.tar\.gz\n?", sums)
+    if expected is None:
+        raise ValueError("Release checksum file does not describe the expected archive")
+    data = _download_release_asset(version, RELEASE_ARCHIVE, RELEASE_MAX_BYTES)
+    if not hmac.compare_digest(hashlib.sha256(data).hexdigest().encode(), expected[1]):
+        raise ValueError("Release checksum did not match; the installation was not changed")
+    archive = workspace / RELEASE_ARCHIVE
+    archive.write_bytes(data)
+    source = workspace / "kays-mail-mcp"
+    try:
+        with tarfile.open(archive, "r:gz") as bundle:
+            remaining = RELEASE_MAX_BYTES
+            for entry in bundle:
+                path = Path(entry.name)
+                remaining -= entry.size + 512
+                if (
+                    remaining < 0
+                    or not path.parts
+                    or path.parts[0] != source.name
+                    or ".." in path.parts
+                    or not (entry.isdir() or entry.isfile())
+                ):
+                    raise ValueError("Unexpected path, entry type or size in release archive")
+                bundle.extract(entry, workspace, filter="data")
+    except (tarfile.TarError, EOFError) as exc:
+        raise ValueError("Release archive could not be extracted") from exc
+    images = read_release_images(source)
+    if images:
+        image = images["MAIL_IMAGE"]
+        if not image.startswith(f"ghcr.io/{RELEASE_REPOSITORY}@sha256:"):
+            raise ValueError("Release image does not belong to this project's GHCR repository")
+        command = ["docker", "pull", image]
+    else:
+        # A retry must never overwrite the tag used by the running reader.
+        image = f"kays-mail-mcp:release-{expected[1].decode()[:12]}-{uuid.uuid4().hex}"
+        command = ["docker", "build", "--tag", image, str(source)]
+    if subprocess.run(command, check=False, timeout=900).returncode:
+        raise ValueError(f"Could not prepare the reader image for {version}")
+    return image
+
+
+def _activate_release_reader(config: Path, env_file: Path, hostname: str) -> None:
+    command = _compose_arguments(config, [], env_file=env_file)
+    started = subprocess.run(
+        [
+            *command, "up", "-d", "--no-deps", "--no-build", "--pull", "never",
+            "--wait", "--wait-timeout", "60", "mail",
+        ],
+        check=False,
+        timeout=90,
+    )
+    if started.returncode:
+        raise ValueError("The reader did not become healthy")
+    _capture([*command, "exec", "-T", "gateway", "nginx", "-s", "reload"])
+    # Reload is asynchronous. Verify nginx can actually reach the reader through its OAuth route.
+    probe = [
+        *command, "exec", "-T", "gateway", "wget", "-q", "-T", "3", "-O", "/dev/null",
+        "--header", f"Host: {hostname}",
+        "http://127.0.0.1:8080/.well-known/oauth-protected-resource/mcp",
+    ]
+    for _ in range(5):
+        if subprocess.run(probe, check=False, timeout=8).returncode == 0:
+            return
+        time.sleep(1)
+    raise ValueError("The gateway could not reach the reader's OAuth discovery endpoint")
+
+
+def upgrade_release(config: Path, version: str) -> None:
+    """replace the reader from a specific release and commit its image only after checking it"""
+    if len(version) > 100 or not re.fullmatch(
+        r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9]+(?:[.-][a-zA-Z0-9]+)*)?", version
+    ):
+        raise ValueError("Specify an exact release tag such as v0.1.0-alpha.2")
+    validate_existing(config)
+    env_file = config / "compose.env"
+    lock_fd = os.open(
+        config / ".release-update.lock", os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR, 0o600
+    )
+    with os.fdopen(lock_fd, "w"), tempfile.TemporaryDirectory(dir=config) as directory:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("Another release upgrade is already running") from None
+        workspace = Path(directory)
+        original = env_file.read_text()
+        compose_config = ["config", "--format", "json"]
+        deployment = json.loads(_capture(_compose_arguments(config, compose_config)))
+        mail = deployment.get("services", {}).get("mail", {})
+        previous = mail.get("image")
+        if not isinstance(previous, str) or not previous:
+            raise ValueError("The existing Compose configuration does not select a reader image")
+        container = _capture(_compose_arguments(config, ["ps", "-q", "mail"]))
+        if len(container.splitlines()) != 1:
+            raise ValueError("One running reader is required; run --doctor before upgrading")
+        running_id = _capture(["docker", "inspect", "--format", "{{.Image}}", container])
+        selected_id = _capture(["docker", "image", "inspect", "--format", "{{.Id}}", previous])
+        if running_id != selected_id:
+            raise ValueError("The running reader does not match compose.env; reconcile it first")
+        settings = json.loads((config / "settings.json").read_text())
+        hostname = urlsplit(_origin(settings.get("mcp_url", ""))).netloc
+        image = _stage_release_image(version, workspace)
+        staged = workspace / "compose.env"
+        retained = re.sub(
+            rf"(?m)^[ \t]*(?:export[ \t]+)?(?:MAIL_IMAGE|{READER_RELEASE_KEY})[ \t]*=.*\n?",
+            "",
+            original,
+        )
+        _write(
+            staged,
+            retained + ("\n" if retained and not retained.endswith("\n") else "")
+            + _env({"MAIL_IMAGE": image, READER_RELEASE_KEY: version}),
+        )
+        mail["image"] = image
+        candidate = json.loads(
+            _capture(_compose_arguments(config, compose_config, env_file=staged))
+        )
+        if candidate != deployment:
+            raise ValueError(
+                "Release update must change only the reader image; check Compose overrides"
+            )
+        try:
+            _activate_release_reader(config, staged, hostname)
+            staged.replace(env_file)
+        except (ValueError, OSError, subprocess.SubprocessError, KeyboardInterrupt):
+            try:
+                _activate_release_reader(config, env_file, hostname)
+            except (ValueError, OSError, subprocess.SubprocessError, KeyboardInterrupt):
+                raise ValueError(
+                    "Release upgrade failed and rollback could not finish. "
+                    "The previous image remains configured; see docs/operations.md."
+                ) from None
+            raise ValueError("Release upgrade failed; rolled back to the previous reader") from None
+    print(f"Reader upgraded to {version}. Run ./setup.sh --doctor and verify a client connection.")
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -656,6 +829,7 @@ def main(argv: list[str] | None = None) -> int:
     modes.add_argument(
         "--upgrade", action="store_true", help="upgrade only the source-built reader"
     )
+    modes.add_argument("--upgrade-release", metavar="TAG", help="upgrade the reader to a release")
     modes.add_argument(
         "--doctor", action="store_true", help="diagnose services, HTTPS, OAuth and IMAP"
     )
@@ -672,7 +846,10 @@ def main(argv: list[str] | None = None) -> int:
         "--public", action="store_true", help="enable a separately configured Cloudflare Tunnel"
     )
     args = parser.parse_args(argv)
-    if args.public and (args.upgrade or args.doctor or args.configure_sessions):
+    managing = (
+        args.upgrade or args.upgrade_release is not None or args.doctor or args.configure_sessions
+    )
+    if args.public and managing:
         parser.error("--public cannot be combined with a management operation")
     try:
         # a check-only invocation validates available tooling and existing files without setup
@@ -681,10 +858,10 @@ def main(argv: list[str] | None = None) -> int:
         if (
             (args.session_max_days or args.session_idle_days)
             and not args.configure_sessions
-            and (args.upgrade or args.doctor or args.check or (config / "settings.json").exists())
+            and (managing or args.check or (config / "settings.json").exists())
         ):
             raise ValueError("Use --configure-sessions to change an existing installation's limits")
-        if args.upgrade or args.doctor or args.configure_sessions:
+        if managing:
             if not (config / "settings.json").exists():
                 raise ValueError("No installation found; run ./setup.sh first")
             if args.configure_sessions:
@@ -694,7 +871,10 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             if args.doctor:
                 return 0 if doctor(config) else 1
-            upgrade(config)
+            if args.upgrade_release is not None:
+                upgrade_release(config, args.upgrade_release)
+            else:
+                upgrade(config)
             return 0
         if args.check:
             if (config / "settings.json").exists():
@@ -735,7 +915,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.no_start:
             print(f"Private configuration prepared at {config}. Services were not started.")
             return 0
-        build_mode = "--no-build" if read_release_images(ROOT) else "--build"
+        prebuilt = _has_managed_release(config) or bool(read_release_images(ROOT))
+        build_mode = "--no-build" if prebuilt else "--build"
         # wait for health checks before deleting the one-time plaintext Keycloak import
         compose(config, ["up", "-d", build_mode, "--wait", "--wait-timeout", "240"])
         # remove the plaintext bootstrap credential after Keycloak imports and hashes it

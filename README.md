@@ -85,13 +85,17 @@ capabilities. This is a private server connection, not an app-store listing.
 ```bash
 ./setup.sh --doctor    # services, public HTTPS/OAuth discovery and read-only IMAP access
 ./setup.sh --upgrade   # rebuild and replace only the source-built mail reader
+./setup.sh --upgrade-release TAG  # replace TAG with an exact published version
 ```
 
-Update your source checkout to the desired version before upgrading; the command
-does not pull Git changes. It retains the running image for rollback, waits for
-the replacement to become healthy, and reloads the gateway. Startup/reload failure
-triggers automatic rollback. For a digest-pinned release installation or an
-update that changes identity or database services, follow the
+Run `--upgrade-release` from a checkout or release that includes the updater.
+Choose a tag from GitHub Releases and check its notes for migration requirements.
+The updater downloads and verifies the bundle, replaces the reader, and rolls
+back if startup or the gateway check fails. Existing settings and logins carry
+over. Pass `--config-dir` if your installation uses a custom location.
+
+For `--upgrade`, update the source checkout to the desired commit first. For
+an update that requires identity, database, or deployment template changes, follow the
 [full release upgrade procedure](docs/operations.md#full-release-upgrades).
 
 ## Tools

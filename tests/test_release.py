@@ -12,6 +12,22 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from test_setup import setup
+
+
+def test_damaged_release_is_rejected_before_docker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """a corrupted download must never be extracted or passed to Docker"""
+    checksum = hashlib.sha256(b"expected archive").hexdigest().encode()
+    assets = {
+        "SHA256SUMS": checksum + b"  kays-mail-mcp.tar.gz\n",
+        "kays-mail-mcp.tar.gz": b"truncated download",
+    }
+    monkeypatch.setattr(setup, "_download_release_asset", lambda _, name, _limit: assets[name])
+    with pytest.raises(ValueError, match="checksum did not match"):
+        setup._stage_release_image("v0.1.0-alpha.2", tmp_path)
+    assert not list(tmp_path.iterdir())
 
 
 @pytest.mark.parametrize("prebuilt", [True, False])
