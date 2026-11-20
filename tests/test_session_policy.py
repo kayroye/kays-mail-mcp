@@ -86,7 +86,16 @@ def identity_api(
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    monkeypatch.setattr(setup, "_capture", lambda command: f"127.0.0.1:{server.server_port}")
+    def capture(command: list[str]) -> str:
+        if "inspect" in command:
+            return json.dumps({"ports": {"8080/tcp": [
+                {"HostIp": "127.0.0.1", "HostPort": str(server.server_port)}
+            ]}})
+        if "ps" in command:
+            return "fixture-keycloak"
+        return f"127.0.0.1:{server.server_port}"
+
+    monkeypatch.setattr(setup, "_capture", capture)
     try:
         yield config, state
     finally:
@@ -165,7 +174,14 @@ def test_nonloopback_admin_address_is_rejected_before_sending_credentials(
 ) -> None:
     """Prevent a changed Compose binding from sending the administrator password over a network."""
     config, state = identity_api
-    monkeypatch.setattr(setup, "_capture", lambda command: "192.0.2.1:8080")
+    def capture(command: list[str]) -> str:
+        if "inspect" in command:
+            return json.dumps({"ports": {"8080/tcp": [
+                {"HostIp": "192.0.2.1", "HostPort": "8080"}
+            ]}})
+        return "192.0.2.1:8080"
+
+    monkeypatch.setattr(setup, "_capture", capture)
     with pytest.raises(ValueError, match="loopback"):
         setup.configure_sessions(config, "180", "90")
     assert not state["updates"]
@@ -199,13 +215,14 @@ def test_internal_docker_admin_fallback_requires_an_internal_network(
 
     def capture(command: list[str]) -> str:
         if "port" in command:
-            raise ValueError("not published")
+            return ""  # Some Compose versions return success with no published port.
         if "ps" in command:
             return "fixture-keycloak"
         if "network" in command:
             return "true" if internal else "false"
         return json.dumps(
-            {"project": "fixture", "networks": {"fixture_identity": {"IPAddress": "10.0.6.3"}}}
+            {"project": "fixture", "ports": {},
+             "networks": {"fixture_identity": {"IPAddress": "10.0.6.3"}}}
         )
 
     monkeypatch.setattr(setup, "_capture", capture)

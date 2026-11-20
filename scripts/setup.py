@@ -589,37 +589,42 @@ class _NoRedirect(HTTPRedirectHandler):
 
 def admin_address(config: Path) -> str:
     """prefer loopback; internal-only Docker networks may suppress published ports"""
-    try:
-        address = _capture(_compose_arguments(config, ["port", "keycloak", "8080"]))
-    except ValueError:
-        container = _capture(_compose_arguments(config, ["ps", "-q", "keycloak"]))
-        if not container or len(container.splitlines()) != 1:
-            raise ValueError("One running Keycloak is required") from None
-        details = json.loads(
-            _capture(
-                [
-                    "docker",
-                    "inspect",
-                    "--format",
-                    '{"project":{{json (index .Config.Labels "com.docker.compose.project")}},'
-                    '"networks":{{json .NetworkSettings.Networks}}}',
-                    container,
-                ]
-            )
+    container = _capture(_compose_arguments(config, ["ps", "-q", "keycloak"]))
+    if len(container.splitlines()) != 1:
+        raise ValueError("One running Keycloak is required")
+    details = json.loads(
+        _capture(
+            [
+                "docker",
+                "inspect",
+                "--format",
+                '{"project":{{json (index .Config.Labels "com.docker.compose.project")}},'
+                '"ports":{{json .NetworkSettings.Ports}},'
+                '"networks":{{json .NetworkSettings.Networks}}}',
+                container,
+            ]
         )
-        network = details["project"] + "_identity"
-        internal = _capture(["docker", "network", "inspect", "--format", "{{.Internal}}", network])
-        if internal != "true":
-            raise ValueError(
-                "Identity administration requires an internal Docker network"
-            ) from None
-        address_ip = ipaddress.IPv4Address(details["networks"][network]["IPAddress"])
-        if not address_ip.is_private:
-            raise ValueError("Identity administration requires a private Docker address") from None
-        return str(address_ip) + ":8080"
-    if not re.fullmatch(r"127\.0\.0\.1:[0-9]{1,5}", address):
-        raise ValueError("Session configuration requires the loopback Keycloak administration port")
-    return address
+    )
+    bindings = (details["ports"] or {}).get("8080/tcp") or []
+    if bindings:
+        port: str = bindings[0]["HostPort"]
+        if (
+            len(bindings) != 1
+            or bindings[0]["HostIp"] != "127.0.0.1"
+            or not re.fullmatch(r"[0-9]{1,5}", port)
+            or not 0 < int(port) <= 65535
+        ):
+            raise ValueError("Keycloak administration requires a loopback port")
+        return "127.0.0.1:" + port
+
+    network = details["project"] + "_identity"
+    internal = _capture(["docker", "network", "inspect", "--format", "{{.Internal}}", network])
+    if internal != "true":
+        raise ValueError("Identity administration requires an internal Docker network")
+    address_ip = ipaddress.IPv4Address(details["networks"].get(network, {}).get("IPAddress", ""))
+    if not address_ip.is_private:
+        raise ValueError("Identity administration requires a private Docker address")
+    return str(address_ip) + ":8080"
 
 
 def configure_sessions(config: Path, maximum: str, idle: str) -> None:
