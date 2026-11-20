@@ -1,6 +1,6 @@
 # Setup
 
-Use a Linux x86-64 server with Docker Engine, Compose v2, Bash and Python 3.11+.
+Use a Linux x86-64 server with Docker Engine, the Compose plugin, Bash and Python 3.11+.
 Allow about 2 GiB RAM and several GiB of disk for images and identity state.
 Other architectures are not advertised as supported yet. Docker access grants
 administrative capabilities; use a non-root server account you trust. Setup

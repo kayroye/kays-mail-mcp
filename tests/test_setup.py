@@ -151,6 +151,20 @@ def test_check_has_no_side_effect_and_missing_prerequisite_is_actionable(tmp_pat
     assert not (tmp_path / "new").exists()
 
 
+def test_check_accepts_current_compose_plugin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch setup rejecting Compose v5 even when Docker is accessible."""
+    docker = tmp_path / "docker"
+    docker.write_text(
+        '#!/bin/sh\ncase "$1" in\ncompose) printf "5.1.0\\n";;\ninfo) exit 0;;\n*) exit 1;;\nesac\n'
+    )
+    docker.chmod(0o700)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert setup.main(["--check", "--config-dir", str(tmp_path / "private")]) == 0
+    assert not (tmp_path / "private").exists()
+
+
 def test_release_requires_digest_pinned_images(tmp_path: Path) -> None:
     """check release images reject mutable tags and accept pinned digests"""
     manifest = tmp_path / "release-images.json"

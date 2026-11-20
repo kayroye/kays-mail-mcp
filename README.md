@@ -13,7 +13,7 @@ been performed.
 
 ## Quick start
 
-Use a Linux x86-64 server with Docker Engine, Docker Compose v2, Bash and
+Use a Linux x86-64 server with Docker Engine, Docker Compose plugin, Bash and
 Python 3.11+. You'll need two HTTPS hostnames, one for MCP and one for login.
 
 Download `kays-mail-mcp.tar.gz` and `SHA256SUMS` from the same version on the

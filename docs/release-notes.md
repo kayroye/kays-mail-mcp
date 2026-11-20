@@ -21,7 +21,7 @@ and existing login, and restores the previous reader if startup or the gateway
 check fails. Test a search in your connected client after the upgrade.
 
 For a fresh install, run `./setup.sh` after extracting. Linux x86-64,
-Docker Engine, Compose v2 and Python 3.11+ are required.
+Docker Engine, the Compose plugin and Python 3.11+ are required.
 
 ### What changed
 

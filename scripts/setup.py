@@ -325,12 +325,13 @@ def validate_existing(config: Path) -> None:
 def prerequisites() -> None:
     """check Docker Compose and daemon access before creating or starting services"""
     if shutil.which("docker") is None:
-        raise ValueError("Docker is required. Install Docker Engine and Docker Compose v2 first.")
+        raise ValueError("Docker is required. Install Docker Engine and the Compose plugin first.")
     result = subprocess.run(
         ["docker", "compose", "version", "--short"], capture_output=True, text=True, check=False
     )
-    if result.returncode or not result.stdout.strip().startswith("2."):
-        raise ValueError("Docker Compose v2 is required. Install the Compose plugin first.")
+    version = re.match(r"v?([0-9]+)\.[0-9]+\.", result.stdout.strip())
+    if result.returncode or not version or int(version[1]) < 2:
+        raise ValueError("The Docker Compose plugin (v2 or newer) is required.")
     if subprocess.run(
         ["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False
     ).returncode:
